@@ -1,12 +1,12 @@
 /**
  * CameraScreen.js
  *
- * Live camera feed screen.
- * - Uses expo-camera to render a live preview
- * - Captures frames automatically every 500ms while scanning
- * - Runs marker detection on each captured frame
- * - Collects up to 20 unique detected markers
- * - Navigates to ResultsScreen once 20 are collected
+ * Live camera feed with real-time Marker 1 detection.
+ * - Captures frames every 600ms while scanning
+ * - Shows animated scan-frame overlay with corner brackets
+ * - Color-coded status feedback
+ * - Progress bar tracking 20/20 captures
+ * - Navigates to ResultsScreen when 20 unique markers captured
  */
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
@@ -17,114 +17,144 @@ import {
   TouchableOpacity,
   Dimensions,
   ActivityIndicator,
+  Animated,
+  Easing,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { processMarkerImage } from '../utils/imageProcessor';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const FRAME_SIZE = Math.round(Math.min(SCREEN_W, SCREEN_H) * 0.72);
 
-// Target 20 unique marker captures
 const TARGET_COUNT = 20;
-// Interval between capture attempts (ms)
-const CAPTURE_INTERVAL_MS = 600;
-// Camera photo quality (0–1). Higher = better detection but slower.
-const PHOTO_QUALITY = 1.0;
-
-// Preferred picture sizes in order (2000–3000px range per spec)
-const PREFERRED_SIZES = ['2560x2560', '2048x2048', '2000x2000', '3000x3000', '2592x1944'];
+const CAPTURE_INTERVAL_MS = 650;
 
 export default function CameraScreen({ navigation }) {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
+
   const [isScanning, setIsScanning] = useState(false);
-  const [detectedCount, setDetectedCount] = useState(0);
-  const [statusText, setStatusText] = useState('Point camera at the marker');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [pictureSize, setPictureSize] = useState('2048x2048');
+  const [detectedCount, setDetectedCount] = useState(0);
+  const [status, setStatus] = useState({ text: 'Point camera at Marker 1', type: 'idle' });
 
   const detectedMarkers = useRef([]);
-  const captureIntervalRef = useRef(null);
-  const isMountedRef = useRef(true);
+  const intervalRef = useRef(null);
+  const isMounted = useRef(true);
+  const isProcessingRef = useRef(false);
+
+  // Animated values
+  const scanAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const flashAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    isMountedRef.current = true;
+    isMounted.current = true;
     return () => {
-      isMountedRef.current = false;
-      stopScanning();
+      isMounted.current = false;
+      clearInterval(intervalRef.current);
     };
   }, []);
 
-  // Pick the best available picture size in the 2000–3000px range
+  // Scanning line animation
+  useEffect(() => {
+    if (isScanning) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanAnim, {
+            toValue: 1,
+            duration: 1800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(scanAnim, {
+            toValue: 0,
+            duration: 1800,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      scanAnim.setValue(0);
+    }
+  }, [isScanning]);
+
+  // Corner bracket pulse
+  useEffect(() => {
+    if (isScanning) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.04,
+            duration: 900,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 900,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isScanning]);
+
+  // Flash on detection
+  const flashOnDetect = useCallback(() => {
+    flashAnim.setValue(1);
+    Animated.timing(flashAnim, {
+      toValue: 0,
+      duration: 350,
+      useNativeDriver: true,
+    }).start();
+  }, [flashAnim]);
+
+  // ── Camera ready: negotiate picture size ─────────────────────────────────
   const onCameraReady = useCallback(async () => {
     try {
       if (!cameraRef.current) return;
-      const sizes = await cameraRef.current.getAvailablePictureSizes();
+      const sizes = await cameraRef.current.getAvailablePictureSizes?.();
       if (!sizes || sizes.length === 0) return;
 
-      // Find the best match from our preferred list
-      for (const preferred of PREFERRED_SIZES) {
-        if (sizes.includes(preferred)) {
-          setPictureSize(preferred);
+      // Preferred sizes in the 2000–3000px range per spec
+      const preferred = ['2560x2560', '2048x2048', '2000x2000', '2592x2592', '3000x3000'];
+      for (const p of preferred) {
+        if (sizes.includes(p)) {
+          cameraRef.current._pictureSize = p;
           return;
         }
       }
-
-      // Fallback: pick the largest size that fits within 3000px
-      const validSizes = sizes.filter((s) => {
-        const parts = s.split('x');
-        if (parts.length !== 2) return false;
-        const w = parseInt(parts[0], 10);
-        const h = parseInt(parts[1], 10);
-        return w >= 2000 && w <= 3000 && h >= 2000 && h <= 3000;
-      });
-
-      if (validSizes.length > 0) {
-        // Sort descending by width
-        validSizes.sort((a, b) => {
-          const wa = parseInt(a.split('x')[0], 10);
-          const wb = parseInt(b.split('x')[0], 10);
-          return wb - wa;
-        });
-        setPictureSize(validSizes[0]);
-      }
     } catch (e) {
-      // Keep default if this fails
-      console.warn('[CameraScreen] Could not get picture sizes:', e.message);
+      // Non-critical; keep default
     }
   }, []);
 
-  const stopScanning = useCallback(() => {
-    if (captureIntervalRef.current) {
-      clearInterval(captureIntervalRef.current);
-      captureIntervalRef.current = null;
-    }
-    setIsScanning(false);
-  }, []);
-
+  // ── Core capture + process loop ───────────────────────────────────────────
   const captureAndProcess = useCallback(async () => {
-    if (!cameraRef.current || isProcessing || !isMountedRef.current) return;
+    if (!cameraRef.current) return;
+    if (isProcessingRef.current) return;
     if (detectedMarkers.current.length >= TARGET_COUNT) return;
+    if (!isMounted.current) return;
 
+    isProcessingRef.current = true;
     setIsProcessing(true);
 
     try {
-      // Capture photo at full quality
-      // expo-camera captures at the device's native resolution
       const photo = await cameraRef.current.takePictureAsync({
-        quality: PHOTO_QUALITY,
+        quality: 1.0,
         skipProcessing: false,
         exif: false,
       });
 
-      if (!isMountedRef.current) return;
+      if (!isMounted.current) return;
 
       const { uri, width, height } = photo;
-
-      setStatusText(`Processing frame... (${detectedMarkers.current.length}/${TARGET_COUNT})`);
-
       const result = await processMarkerImage(uri, { width, height });
 
-      if (!isMountedRef.current) return;
+      if (!isMounted.current) return;
 
       if (result.success && result.uri) {
         detectedMarkers.current.push({
@@ -135,53 +165,70 @@ export default function CameraScreen({ navigation }) {
 
         const count = detectedMarkers.current.length;
         setDetectedCount(count);
-        setStatusText(`Marker detected! (${count}/${TARGET_COUNT}) — ${result.processingTimeMs}ms`);
+        flashOnDetect();
 
         if (count >= TARGET_COUNT) {
-          stopScanning();
-          setStatusText('All 20 markers captured!');
-          // Navigate to results after a brief pause
+          // Done!
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          setIsScanning(false);
+          setStatus({ text: `✓ All 20 markers captured!`, type: 'done' });
           setTimeout(() => {
-            if (isMountedRef.current) {
+            if (isMounted.current) {
               navigation.navigate('Results', {
                 markers: detectedMarkers.current,
               });
             }
-          }, 500);
+          }, 600);
+        } else {
+          setStatus({
+            text: `✓ Marker detected! ${count}/${TARGET_COUNT} — ${result.processingTimeMs}ms`,
+            type: 'success',
+          });
         }
       } else {
-        setStatusText(`Scanning... (${detectedMarkers.current.length}/${TARGET_COUNT}) — No marker found`);
+        setStatus({
+          text: `Scanning… ${detectedMarkers.current.length}/${TARGET_COUNT}`,
+          type: 'scanning',
+        });
       }
     } catch (err) {
-      console.error('[CameraScreen] Capture error:', err);
-      if (isMountedRef.current) {
-        setStatusText('Capture error, retrying...');
+      console.warn('[CameraScreen] Capture error:', err.message);
+      if (isMounted.current) {
+        setStatus({ text: 'Capture error — retrying…', type: 'error' });
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMounted.current) {
         setIsProcessing(false);
       }
+      isProcessingRef.current = false;
     }
-  }, [isProcessing, stopScanning, navigation]);
+  }, [flashOnDetect, navigation]);
 
   const startScanning = useCallback(() => {
     detectedMarkers.current = [];
     setDetectedCount(0);
     setIsScanning(true);
-    setStatusText('Scanning for marker...');
+    setStatus({ text: 'Scanning for Marker 1…', type: 'scanning' });
 
-    captureIntervalRef.current = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       captureAndProcess();
     }, CAPTURE_INTERVAL_MS);
   }, [captureAndProcess]);
 
-  // ── Permission handling ────────────────────────────────────────────────────
+  const stopScanning = useCallback(() => {
+    clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    setIsScanning(false);
+    setStatus({ text: 'Scan paused', type: 'idle' });
+  }, []);
 
+  // ── Permission screens ─────────────────────────────────────────────────────
   if (!permission) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={styles.infoText}>Checking camera permission...</Text>
+        <ActivityIndicator size="large" color="#00E5A0" />
+        <Text style={styles.infoText}>Checking camera permission…</Text>
       </View>
     );
   }
@@ -189,81 +236,216 @@ export default function CameraScreen({ navigation }) {
   if (!permission.granted) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.infoText}>Camera permission is required.</Text>
-        <TouchableOpacity style={styles.button} onPress={requestPermission}>
-          <Text style={styles.buttonText}>Grant Permission</Text>
+        <Text style={styles.permIcon}>📷</Text>
+        <Text style={styles.infoText}>Camera access is required to detect markers.</Text>
+        <TouchableOpacity style={styles.btn} onPress={requestPermission}>
+          <Text style={styles.btnText}>Grant Permission</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Frame border color based on status ────────────────────────────────────
+  const frameColor =
+    status.type === 'success' || status.type === 'done'
+      ? '#00E5A0'
+      : status.type === 'error'
+      ? '#FF453A'
+      : status.type === 'scanning'
+      ? '#007AFF'
+      : '#FFFFFF44';
 
+  const scanLineY = scanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, FRAME_SIZE - 4],
+  });
+
+  const progressPct = (detectedCount / TARGET_COUNT) * 100;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      {/* Live Camera Feed */}
+      {/* Camera */}
       <CameraView
         ref={cameraRef}
-        style={styles.camera}
+        style={StyleSheet.absoluteFill}
         facing="back"
-        // Request highest available resolution (2000–3000px range per spec)
-        pictureSize={pictureSize}
         onCameraReady={onCameraReady}
-      >
-        {/* Marker overlay guide */}
-        <View style={styles.overlay}>
-          <View style={styles.scanFrame} />
-        </View>
-      </CameraView>
+      />
 
-      {/* Status bar */}
-      <View style={styles.statusBar}>
-        <Text style={styles.statusText}>{statusText}</Text>
-        <View style={styles.progressBar}>
+      {/* Detection flash overlay */}
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          { backgroundColor: '#00E5A0', opacity: flashAnim, pointerEvents: 'none' },
+        ]}
+      />
+
+      {/* Dark vignette + scan frame */}
+      <View style={styles.overlay}>
+        {/* Top dark band */}
+        <View style={[styles.darkBand, { height: (SCREEN_H - FRAME_SIZE) / 2.5 }]} />
+
+        {/* Scan frame row */}
+        <View style={styles.frameRow}>
+          <View style={styles.darkSide} />
+
+          {/* The scan frame itself */}
+          <Animated.View
+            style={[
+              styles.scanFrame,
+              {
+                width: FRAME_SIZE,
+                height: FRAME_SIZE,
+                borderColor: frameColor,
+                transform: [{ scale: pulseAnim }],
+              },
+            ]}
+          >
+            {/* Corner brackets */}
+            <CornerBracket pos="TL" color={frameColor} />
+            <CornerBracket pos="TR" color={frameColor} />
+            <CornerBracket pos="BL" color={frameColor} />
+            <CornerBracket pos="BR" color={frameColor} />
+
+            {/* Scanning line */}
+            {isScanning && (
+              <Animated.View
+                style={[
+                  styles.scanLine,
+                  {
+                    backgroundColor: frameColor,
+                    transform: [{ translateY: scanLineY }],
+                  },
+                ]}
+              />
+            )}
+          </Animated.View>
+
+          <View style={styles.darkSide} />
+        </View>
+
+        {/* Bottom area: status + controls */}
+        <View style={styles.bottomPanel}>
+          {/* Status badge */}
           <View
             style={[
-              styles.progressFill,
-              { width: `${(detectedCount / TARGET_COUNT) * 100}%` },
+              styles.statusBadge,
+              status.type === 'success' || status.type === 'done'
+                ? styles.badgeSuccess
+                : status.type === 'error'
+                ? styles.badgeError
+                : status.type === 'scanning'
+                ? styles.badgeScanning
+                : styles.badgeIdle,
             ]}
-          />
-        </View>
-        <Text style={styles.countText}>
-          {detectedCount} / {TARGET_COUNT} markers
-        </Text>
-      </View>
-
-      {/* Controls */}
-      <View style={styles.controls}>
-        {!isScanning ? (
-          <TouchableOpacity style={styles.button} onPress={startScanning}>
-            <Text style={styles.buttonText}>Start Scanning</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.button, styles.stopButton]}
-            onPress={stopScanning}
           >
-            <Text style={styles.buttonText}>Stop</Text>
-          </TouchableOpacity>
-        )}
+            <Text style={styles.statusText} numberOfLines={1}>
+              {status.text}
+            </Text>
+          </View>
 
-        {detectedCount > 0 && !isScanning && (
-          <TouchableOpacity
-            style={[styles.button, styles.viewButton]}
-            onPress={() =>
-              navigation.navigate('Results', { markers: detectedMarkers.current })
-            }
-          >
-            <Text style={styles.buttonText}>View Results ({detectedCount})</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+          {/* Progress bar */}
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
+          </View>
+          <Text style={styles.countLabel}>
+            {detectedCount} / {TARGET_COUNT} markers captured
+          </Text>
 
-      {isProcessing && (
-        <View style={styles.processingOverlay}>
-          <ActivityIndicator size="small" color="#fff" />
+          {/* Buttons */}
+          <View style={styles.controls}>
+            {isProcessing && (
+              <ActivityIndicator
+                size="small"
+                color="#00E5A0"
+                style={{ marginRight: 12 }}
+              />
+            )}
+
+            {!isScanning ? (
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary]}
+                onPress={startScanning}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.btnText}>
+                  {detectedCount > 0 ? '↺ Scan Again' : '▶ Start Scanning'}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.btn, styles.btnStop]}
+                onPress={stopScanning}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.btnText}>⏹ Stop</Text>
+              </TouchableOpacity>
+            )}
+
+            {detectedCount > 0 && !isScanning && (
+              <TouchableOpacity
+                style={[styles.btn, styles.btnView]}
+                onPress={() =>
+                  navigation.navigate('Results', {
+                    markers: detectedMarkers.current,
+                  })
+                }
+                activeOpacity={0.8}
+              >
+                <Text style={styles.btnText}>View {detectedCount} →</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
-      )}
+      </View>
+    </View>
+  );
+}
+
+/** Corner bracket decoration for scan frame */
+function CornerBracket({ pos, color }) {
+  const size = 22;
+  const thick = 3;
+  const isTop = pos === 'TL' || pos === 'TR';
+  const isLeft = pos === 'TL' || pos === 'BL';
+
+  return (
+    <View
+      style={{
+        position: 'absolute',
+        width: size,
+        height: size,
+        top: isTop ? 0 : undefined,
+        bottom: !isTop ? 0 : undefined,
+        left: isLeft ? 0 : undefined,
+        right: !isLeft ? 0 : undefined,
+      }}
+    >
+      {/* Horizontal bar */}
+      <View
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          height: thick,
+          top: isTop ? 0 : undefined,
+          bottom: !isTop ? 0 : undefined,
+          backgroundColor: color,
+        }}
+      />
+      {/* Vertical bar */}
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          width: thick,
+          left: isLeft ? 0 : undefined,
+          right: !isLeft ? 0 : undefined,
+          backgroundColor: color,
+        }}
+      />
     </View>
   );
 }
@@ -277,92 +459,117 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#000',
-    padding: 20,
+    backgroundColor: '#0A0A0A',
+    padding: 28,
+    gap: 16,
   },
-  camera: {
-    flex: 1,
+  permIcon: {
+    fontSize: 52,
+    marginBottom: 8,
+  },
+  infoText: {
+    color: '#ccc',
+    fontSize: 16,
+    textAlign: 'center',
+    lineHeight: 24,
   },
   overlay: {
     flex: 1,
+    justifyContent: 'space-between',
+  },
+  darkBand: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  frameRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+  },
+  darkSide: {
+    flex: 1,
+    height: FRAME_SIZE,
+    backgroundColor: 'rgba(0,0,0,0.55)',
   },
   scanFrame: {
-    width: SCREEN_WIDTH * 0.7,
-    height: SCREEN_WIDTH * 0.7,
-    borderWidth: 2,
-    borderColor: '#00FF88',
+    borderWidth: 1.5,
     borderRadius: 4,
+    overflow: 'hidden',
     backgroundColor: 'transparent',
   },
-  statusBar: {
-    backgroundColor: '#111',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  scanLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 2,
+    opacity: 0.75,
   },
+  bottomPanel: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 24,
+    justifyContent: 'flex-start',
+    gap: 12,
+  },
+  statusBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignSelf: 'center',
+  },
+  badgeIdle: { backgroundColor: '#FFFFFF18' },
+  badgeScanning: { backgroundColor: '#007AFF28' },
+  badgeSuccess: { backgroundColor: '#00E5A028' },
+  badgeError: { backgroundColor: '#FF453A28' },
   statusText: {
     color: '#fff',
     fontSize: 13,
-    marginBottom: 8,
+    fontWeight: '500',
     textAlign: 'center',
   },
-  progressBar: {
-    height: 6,
-    backgroundColor: '#333',
+  progressTrack: {
+    height: 5,
+    backgroundColor: '#FFFFFF18',
     borderRadius: 3,
     overflow: 'hidden',
-    marginBottom: 6,
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#00FF88',
+    backgroundColor: '#00E5A0',
     borderRadius: 3,
   },
-  countText: {
-    color: '#aaa',
+  countLabel: {
+    color: '#FFFFFF66',
     fontSize: 12,
     textAlign: 'center',
   },
   controls: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 16,
-    backgroundColor: '#111',
-  },
-  button: {
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-    minWidth: 140,
     alignItems: 'center',
+    gap: 12,
+    marginTop: 4,
   },
-  stopButton: {
-    backgroundColor: '#FF3B30',
+  btn: {
+    paddingHorizontal: 22,
+    paddingVertical: 13,
+    borderRadius: 10,
+    alignItems: 'center',
+    minWidth: 130,
   },
-  viewButton: {
-    backgroundColor: '#34C759',
+  btnPrimary: {
+    backgroundColor: '#007AFF',
   },
-  buttonText: {
+  btnStop: {
+    backgroundColor: '#FF453A',
+  },
+  btnView: {
+    backgroundColor: '#00C47A',
+  },
+  btnText: {
     color: '#fff',
     fontSize: 15,
-    fontWeight: '600',
-  },
-  infoText: {
-    color: '#fff',
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  processingOverlay: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    borderRadius: 20,
-    padding: 8,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
 });

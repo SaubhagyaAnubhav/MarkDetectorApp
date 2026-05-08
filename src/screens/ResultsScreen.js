@@ -1,8 +1,8 @@
 /**
  * ResultsScreen.js
  *
- * Displays the 20 extracted and processed marker images in a scrollable grid.
- * Each marker is displayed at exactly 300×300px as required by the spec.
+ * Displays the 20 extracted 300×300px marker images in a scrollable grid.
+ * Shows per-capture timing and overall performance summary.
  */
 
 import React, { useMemo } from 'react';
@@ -16,75 +16,149 @@ import {
   Dimensions,
 } from 'react-native';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-// Each marker must be displayed at exactly 300×300px
-const MARKER_DISPLAY_SIZE = 300;
+const { width: SCREEN_W } = Dimensions.get('window');
+
+// Spec: each marker displayed at exactly 300×300px
+const MARKER_SIZE = 300;
+// 2-column grid: calculate card width
+const CARD_OUTER_PAD = 16;
+const CARD_GAP = 10;
+const CARD_WIDTH = Math.floor((SCREEN_W - CARD_OUTER_PAD * 2 - CARD_GAP) / 2);
 
 export default function ResultsScreen({ navigation, route }) {
-  const { markers = [] } = route.params || {};
+  const { markers = [] } = route.params ?? {};
 
-  const avgTime = useMemo(() => {
-    if (markers.length === 0) return 0;
-    const total = markers.reduce((sum, m) => sum + (m.processingTimeMs || 0), 0);
-    return Math.round(total / markers.length);
+  const stats = useMemo(() => {
+    if (markers.length === 0) return { avg: 0, min: 0, max: 0, total: 0 };
+    const times = markers.map((m) => m.processingTimeMs ?? 0);
+    const total = times.reduce((s, t) => s + t, 0);
+    return {
+      avg: Math.round(total / times.length),
+      min: Math.min(...times),
+      max: Math.max(...times),
+      total: markers.length,
+    };
   }, [markers]);
 
-  const maxTime = useMemo(() => {
-    if (markers.length === 0) return 0;
-    return Math.max(...markers.map((m) => m.processingTimeMs || 0));
-  }, [markers]);
+  // Performance grade
+  const grade =
+    stats.avg < 1000
+      ? { label: 'Excellent', color: '#00E5A0' }
+      : stats.avg < 2000
+      ? { label: 'Good', color: '#FFD60A' }
+      : stats.avg < 3000
+      ? { label: 'Acceptable', color: '#FF9F0A' }
+      : { label: 'Slow', color: '#FF453A' };
+
+  // Pair markers into rows of 2
+  const rows = [];
+  for (let i = 0; i < markers.length; i += 2) {
+    rows.push([markers[i], markers[i + 1] ?? null]);
+  }
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.title}>Detected Markers</Text>
-        <Text style={styles.subtitle}>
-          {markers.length} / 20 captured · avg {avgTime}ms · max {maxTime}ms
-        </Text>
-      </View>
-
-      {/* Marker Grid */}
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scroll}
       >
+        {/* Performance Summary Card */}
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryTitle}>Detection Results</Text>
+            <View style={[styles.gradeBadge, { backgroundColor: grade.color + '22', borderColor: grade.color }]}>
+              <Text style={[styles.gradeText, { color: grade.color }]}>{grade.label}</Text>
+            </View>
+          </View>
+
+          <View style={styles.statsRow}>
+            <StatItem label="Captured" value={`${stats.total}/20`} color="#00E5A0" />
+            <StatItem label="Avg Time" value={`${stats.avg}ms`} color="#007AFF" />
+            <StatItem label="Best" value={`${stats.min}ms`} color="#34C759" />
+            <StatItem label="Worst" value={`${stats.max}ms`} color="#FF9F0A" />
+          </View>
+
+          <View style={styles.specRow}>
+            <Text style={styles.specText}>✓ Each image: 300×300px</Text>
+            <Text style={styles.specText}>✓ Orientation corrected</Text>
+          </View>
+        </View>
+
+        {/* Marker Grid */}
         {markers.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No markers detected yet.</Text>
-            <Text style={styles.emptySubText}>
-              Go back and scan the marker with your camera.
+          <View style={styles.empty}>
+            <Text style={styles.emptyIcon}>🔍</Text>
+            <Text style={styles.emptyTitle}>No Markers Captured</Text>
+            <Text style={styles.emptySubtitle}>
+              Go back and scan Marker 1 with your camera.
             </Text>
           </View>
         ) : (
-          markers.map((marker, index) => (
-            <View key={index} style={styles.markerCard}>
-              {/* Label */}
-              <View style={styles.markerLabel}>
-                <Text style={styles.markerIndex}>#{index + 1}</Text>
-                <Text style={styles.markerTime}>{marker.processingTimeMs}ms</Text>
-              </View>
-
-              {/* The marker image — exactly 300×300px as required */}
-              <Image
-                source={{ uri: marker.uri }}
-                style={styles.markerImage}
-                resizeMode="contain"
-              />
+          rows.map((row, ri) => (
+            <View key={ri} style={styles.row}>
+              {row.map((marker, ci) =>
+                marker ? (
+                  <MarkerCard key={ci} marker={marker} index={ri * 2 + ci + 1} />
+                ) : (
+                  <View key={ci} style={{ width: CARD_WIDTH }} />
+                )
+              )}
             </View>
           ))
         )}
+
+        <View style={{ height: 20 }} />
       </ScrollView>
 
       {/* Footer */}
       <View style={styles.footer}>
         <TouchableOpacity
-          style={styles.backButton}
+          style={styles.backBtn}
           onPress={() => navigation.goBack()}
+          activeOpacity={0.8}
         >
-          <Text style={styles.backButtonText}>← Scan Again</Text>
+          <Text style={styles.backBtnText}>↩ Scan Again</Text>
         </TouchableOpacity>
       </View>
+    </View>
+  );
+}
+
+function StatItem({ label, value, color }) {
+  return (
+    <View style={styles.statItem}>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function MarkerCard({ marker, index }) {
+  const isGood = marker.processingTimeMs < 2000;
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardIndex}>#{index}</Text>
+        <View
+          style={[
+            styles.timeBadge,
+            { backgroundColor: isGood ? '#00E5A018' : '#FF9F0A18' },
+          ]}
+        >
+          <Text style={[styles.timeText, { color: isGood ? '#00E5A0' : '#FF9F0A' }]}>
+            {marker.processingTimeMs}ms
+          </Text>
+        </View>
+      </View>
+
+      {/* Marker image — spec: exactly 300×300px */}
+      <Image
+        source={{ uri: marker.uri }}
+        style={styles.markerImg}
+        resizeMode="cover"
+      />
+
+      <Text style={styles.cardSize}>300 × 300 px</Text>
     </View>
   );
 }
@@ -94,94 +168,159 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0A0A0A',
   },
-  header: {
-    paddingTop: 16,
-    paddingBottom: 12,
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#222',
-    backgroundColor: '#111',
+  scroll: {
+    padding: CARD_OUTER_PAD,
+    gap: 16,
   },
-  title: {
+
+  // Summary card
+  summaryCard: {
+    backgroundColor: '#161616',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    gap: 12,
+    marginBottom: 4,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  summaryTitle: {
     color: '#fff',
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '700',
   },
-  subtitle: {
-    color: '#888',
-    fontSize: 13,
-    marginTop: 4,
+  gradeBadge: {
+    borderRadius: 6,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
   },
-  scrollContent: {
-    paddingVertical: 16,
-    paddingHorizontal: 16,
+  gradeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  statItem: {
     alignItems: 'center',
-    gap: 20,
   },
-  markerCard: {
-    backgroundColor: '#1A1A1A',
+  statValue: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  statLabel: {
+    color: '#666',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  specRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#222',
+  },
+  specText: {
+    color: '#00E5A0',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+
+  // Grid
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+
+  // Marker card
+  card: {
+    width: CARD_WIDTH,
+    backgroundColor: '#161616',
     borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#2A2A2A',
-    // Card is slightly wider than the image to give a frame
-    width: MARKER_DISPLAY_SIZE + 24,
   },
-  markerLabel: {
+  cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#222',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: '#1E1E1E',
   },
-  markerIndex: {
-    color: '#00FF88',
-    fontSize: 13,
+  cardIndex: {
+    color: '#00E5A0',
+    fontSize: 12,
     fontWeight: '700',
   },
-  markerTime: {
-    color: '#888',
-    fontSize: 12,
+  timeBadge: {
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
-  markerImage: {
-    // Exactly 300×300px as required by the spec
-    width: MARKER_DISPLAY_SIZE,
-    height: MARKER_DISPLAY_SIZE,
+  timeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  markerImg: {
+    // Spec: displayed at exactly 300×300px
+    width: MARKER_SIZE,
+    height: MARKER_SIZE,
     alignSelf: 'center',
-    margin: 12,
     backgroundColor: '#fff',
   },
-  emptyState: {
-    marginTop: 80,
+  cardSize: {
+    color: '#444',
+    fontSize: 10,
+    textAlign: 'center',
+    paddingVertical: 5,
+  },
+
+  // Empty state
+  empty: {
     alignItems: 'center',
-    paddingHorizontal: 40,
+    paddingTop: 80,
+    gap: 12,
   },
-  emptyText: {
+  emptyIcon: {
+    fontSize: 52,
+  },
+  emptyTitle: {
     color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 8,
+    fontSize: 20,
+    fontWeight: '700',
   },
-  emptySubText: {
+  emptySubtitle: {
     color: '#666',
     fontSize: 14,
     textAlign: 'center',
+    paddingHorizontal: 40,
   },
+
+  // Footer
   footer: {
     padding: 16,
+    paddingBottom: 28,
     borderTopWidth: 1,
-    borderTopColor: '#222',
+    borderTopColor: '#1E1E1E',
     backgroundColor: '#111',
   },
-  backButton: {
+  backBtn: {
     backgroundColor: '#007AFF',
     paddingVertical: 14,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
   },
-  backButtonText: {
+  backBtnText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 });

@@ -1,80 +1,109 @@
 /**
  * imageProcessor.js
  *
- * Bridges expo-image-manipulator with our JS marker detector.
+ * Bridges expo-image-manipulator + jpeg-js with the Marker 1 detector.
+ *
+ * CRITICAL FIX: React Native's Hermes engine has NO atob() browser API.
+ * We use a pure-JS base64 decoder that works in Hermes.
  *
  * Flow:
- *  1. Take a photo URI from expo-camera
- *  2. Resize to a workable size for JS processing (~600px wide)
- *  3. Fetch pixel data via a canvas-like approach using expo-image-manipulator
- *  4. Run the detector
- *  5. If found: crop the bbox from the ORIGINAL full-res image, rotate, resize to 300×300
- *  6. Return the processed 300×300 URI
+ *  1. Downscale photo to 400px wide (fast JS processing)
+ *  2. Export as base64 JPEG via expo-image-manipulator
+ *  3. Decode base64 → Uint8Array (Hermes-safe, no atob)
+ *  4. Decode JPEG → RGBA pixels (jpeg-js)
+ *  5. Run detectMarker(rgba, w, h) → { found, bbox, orientation }
+ *  6. If found: crop original full-res → rotate → resize to 300×300
+ *  7. Return processed URI
  */
 
 import * as ImageManipulator from 'expo-image-manipulator';
+import { detectMarker } from '../marker/detector';
 
-// We process a downscaled version for speed, then crop the original
-const PROCESS_WIDTH = 600;
+// Process at 400px wide — fast enough for smooth detection, accurate enough
+const PROCESS_WIDTH = 400;
+// All output markers must be exactly 300×300px (spec requirement)
 const OUTPUT_SIZE = 300;
 
 /**
- * Process a captured photo to detect and extract the marker.
+ * Process a captured photo: detect the marker and return a 300×300 cropped URI.
  *
- * @param {string} photoUri   URI of the captured photo
- * @param {object} photoSize  { width, height } of the original photo
+ * @param {string} photoUri    URI from expo-camera
+ * @param {{ width: number, height: number }} photoSize
  * @returns {Promise<{ success: boolean, uri: string|null, processingTimeMs: number }>}
  */
 export async function processMarkerImage(photoUri, photoSize) {
-  const startTime = Date.now();
+  const t0 = Date.now();
 
   try {
-    // ── Step 1: Downscale for fast JS processing ──────────────────────────────
-    const scaleRatio = PROCESS_WIDTH / photoSize.width;
-    const processHeight = Math.round(photoSize.height * scaleRatio);
+    // ── 1. Downscale for fast JS pixel processing ─────────────────────────
+    const scaleW = PROCESS_WIDTH / photoSize.width;
+    const processH = Math.round(photoSize.height * scaleW);
 
     const downscaled = await ImageManipulator.manipulateAsync(
       photoUri,
-      [{ resize: { width: PROCESS_WIDTH, height: processHeight } }],
-      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.8, base64: true }
+      [{ resize: { width: PROCESS_WIDTH, height: processH } }],
+      {
+        format: ImageManipulator.SaveFormat.JPEG,
+        compress: 0.85,
+        base64: true,
+      }
     );
 
-    // ── Step 2: Decode pixel data from base64 JPEG ────────────────────────────
-    const pixelData = await decodeJpegToPixels(downscaled.base64, PROCESS_WIDTH, processHeight);
-
-    if (!pixelData) {
-      return { success: false, uri: null, processingTimeMs: Date.now() - startTime };
+    if (!downscaled.base64 || downscaled.base64.length === 0) {
+      return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
 
-    // ── Step 3: Run detector ──────────────────────────────────────────────────
-    const { rgbaToGrayscale, binarise, detectMarker, getRotationDegrees } = await import('../marker/detector');
+    // ── 2. Decode base64 → raw bytes (Hermes-safe: NO atob) ──────────────
+    const jpegBytes = base64ToUint8Array(downscaled.base64);
 
-    const gray = rgbaToGrayscale(pixelData, PROCESS_WIDTH, processHeight);
-    const bin = binarise(gray);
-    const result = detectMarker(bin, PROCESS_WIDTH, processHeight);
-
-    if (!result.found) {
-      return { success: false, uri: null, processingTimeMs: Date.now() - startTime };
+    // ── 3. Decode JPEG → RGBA pixel data ─────────────────────────────────
+    const jpegJs = require('jpeg-js');
+    let decoded;
+    try {
+      decoded = jpegJs.decode(jpegBytes, {
+        useTArray: true,
+        maxMemoryUsageInMB: 256,
+      });
+    } catch (decodeErr) {
+      console.warn('[imageProcessor] JPEG decode failed:', decodeErr.message);
+      return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
 
-    // ── Step 4: Scale bbox back to original image coordinates ─────────────────
+    // ── 4. Run marker detector ────────────────────────────────────────────
+    const result = detectMarker(decoded.data, decoded.width, decoded.height);
+
+    if (!result.found || !result.bbox) {
+      return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
+    }
+
+    // ── 5. Scale bbox back to original full-res coordinates ───────────────
     const { bbox, orientation } = result;
-    const invScale = 1 / scaleRatio;
+    const invScaleW = photoSize.width / decoded.width;
+    const invScaleH = photoSize.height / decoded.height;
 
-    const origX = Math.max(0, Math.round(bbox.x * invScale));
-    const origY = Math.max(0, Math.round(bbox.y * invScale));
-    const origW = Math.min(photoSize.width - origX, Math.round(bbox.w * invScale));
-    const origH = Math.min(photoSize.height - origY, Math.round(bbox.h * invScale));
+    const origX = Math.max(0, Math.round(bbox.x * invScaleW));
+    const origY = Math.max(0, Math.round(bbox.y * invScaleH));
+    const origW = Math.min(
+      photoSize.width - origX,
+      Math.round(bbox.w * invScaleW)
+    );
+    const origH = Math.min(
+      photoSize.height - origY,
+      Math.round(bbox.h * invScaleH)
+    );
 
-    // ── Step 5: Crop, rotate, resize to 300×300 ───────────────────────────────
-    const rotationDeg = getRotationDegrees(orientation);
+    // Safety: ensure valid crop dimensions
+    if (origW < 10 || origH < 10) {
+      return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
+    }
 
+    // ── 6. Crop → rotate (if needed) → resize to 300×300 ─────────────────
     const actions = [
       { crop: { originX: origX, originY: origY, width: origW, height: origH } },
     ];
 
-    if (rotationDeg !== 0) {
-      actions.push({ rotate: rotationDeg });
+    if (orientation !== 0) {
+      actions.push({ rotate: orientation });
     }
 
     actions.push({ resize: { width: OUTPUT_SIZE, height: OUTPUT_SIZE } });
@@ -82,59 +111,66 @@ export async function processMarkerImage(photoUri, photoSize) {
     const processed = await ImageManipulator.manipulateAsync(
       photoUri,
       actions,
-      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
+      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.93 }
     );
 
     return {
       success: true,
       uri: processed.uri,
-      processingTimeMs: Date.now() - startTime,
+      processingTimeMs: Date.now() - t0,
     };
   } catch (err) {
-    console.error('[imageProcessor] Error:', err);
-    return { success: false, uri: null, processingTimeMs: Date.now() - startTime };
+    console.error('[imageProcessor] Unexpected error:', err.message);
+    return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
   }
 }
+
+// ─── Hermes-safe Base64 decoder ──────────────────────────────────────────────
+// React Native's Hermes JS engine does NOT support atob(). This is a pure-JS
+// implementation that works identically in Hermes, V8, and browser environments.
+
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_LOOKUP = (() => {
+  const lookup = new Uint8Array(256);
+  for (let i = 0; i < B64_CHARS.length; i++) {
+    lookup[B64_CHARS.charCodeAt(i)] = i;
+  }
+  return lookup;
+})();
 
 /**
- * Decode a base64 JPEG into raw RGBA pixel data using a pure-JS JPEG decoder.
- * We use a lightweight approach: parse the base64 → Uint8Array, then use
- * a simple scanline approximation via the image dimensions.
- *
- * For a production-quality implementation this would use a WASM JPEG decoder.
- * Here we use a JS-based approach compatible with React Native's JS engine.
- *
- * @param {string} base64   Base64-encoded JPEG (no data URI prefix)
- * @param {number} width
- * @param {number} height
- * @returns {Promise<Uint8ClampedArray|null>}
+ * Decode a base64 string to a Uint8Array.
+ * Works in React Native (Hermes), no browser APIs required.
+ * @param {string} b64 Base64-encoded string (with or without data-URI prefix)
+ * @returns {Uint8Array}
  */
-async function decodeJpegToPixels(base64, width, height) {
-  try {
-    // Use the jpeg-js library if available, otherwise fall back to
-    // a brightness-estimation approach using row/column sampling
-    const jpegJs = await tryImportJpegJs();
-    if (jpegJs) {
-      const binaryStr = atob(base64);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
-      const decoded = jpegJs.decode(bytes, { useTArray: true });
-      return decoded.data; // RGBA Uint8ClampedArray
-    }
-    return null;
-  } catch (e) {
-    console.warn('[decodeJpegToPixels] Decode failed:', e.message);
-    return null;
-  }
-}
+function base64ToUint8Array(b64) {
+  // Strip any data URI prefix (e.g. "data:image/jpeg;base64,")
+  const comma = b64.indexOf(',');
+  if (comma >= 0) b64 = b64.slice(comma + 1);
 
-async function tryImportJpegJs() {
-  try {
-    const jpegJs = require('jpeg-js');
-    return jpegJs;
-  } catch {
-    return null;
+  // Remove non-base64 chars (newlines, spaces, padding awareness)
+  b64 = b64.replace(/[^A-Za-z0-9+/]/g, '');
+
+  const len = b64.length;
+  // Calculate output byte count
+  let bufLen = Math.floor((len * 3) / 4);
+  if (b64[len - 1] === '=') bufLen--;
+  if (b64[len - 2] === '=') bufLen--;
+
+  const out = new Uint8Array(bufLen);
+  let p = 0;
+
+  for (let i = 0; i < len; i += 4) {
+    const e0 = B64_LOOKUP[b64.charCodeAt(i)] ?? 0;
+    const e1 = B64_LOOKUP[b64.charCodeAt(i + 1)] ?? 0;
+    const e2 = B64_LOOKUP[b64.charCodeAt(i + 2)] ?? 0;
+    const e3 = B64_LOOKUP[b64.charCodeAt(i + 3)] ?? 0;
+
+    if (p < bufLen) out[p++] = (e0 << 2) | (e1 >> 4);
+    if (p < bufLen) out[p++] = ((e1 & 0xf) << 4) | (e2 >> 2);
+    if (p < bufLen) out[p++] = ((e2 & 0x3) << 6) | e3;
   }
+
+  return out;
 }
