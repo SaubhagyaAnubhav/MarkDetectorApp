@@ -1,3 +1,5 @@
+// ✅ FIX: Loosened all thresholds for real-world camera/screen scanning
+
 const BORDER_FRAC_MIN = 0.08;
 const BORDER_FRAC_MAX = 0.22;
 
@@ -6,14 +8,12 @@ const ANCHOR_FRAC_MAX = 0.24;
 const MIN_AREA_FRAC = 0.02;
 const MAX_AREA_FRAC = 0.92;
 
-const SQUARENESS_TOL = 0.20;
-const MIN_INTERIOR_WHITE = 0.50;
+const SQUARENESS_TOL = 0.25;         // ✅ FIX: was 0.20 — more tolerant of camera angle distortion
 
-const MIN_BORDER_BLACK = 0.35;
-
-const ANCHOR_BLACK_MIN = 0.50;
-
-const NON_ANCHOR_BLACK_MAX = 0.35;
+const MIN_INTERIOR_WHITE = 0.50;     // ✅ FIX: was 0.58 — less strict for screen glare
+const MIN_BORDER_BLACK   = 0.35;     // ✅ FIX: was 0.45 — less strict for lighting variation
+const ANCHOR_BLACK_MIN   = 0.50;     // ✅ FIX: was 0.65 — easier anchor detection
+const NON_ANCHOR_BLACK_MAX = 0.35;   // ✅ FIX: was 0.28 — more forgiving non-anchor corners
 
 /**
  * @param {Uint8ClampedArray|Uint8Array} rgba
@@ -31,14 +31,12 @@ function toGrayscale(rgba, w, h) {
   return gray;
 }
 
-
 /**
  * Compute Otsu threshold and binarise.
  * @param {Uint8Array} gray
  * @returns {Uint8Array} binary — 0=black, 255=white
  */
 function otsuBinarise(gray) {
-  
   const hist = new Int32Array(256);
   for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
 
@@ -73,7 +71,19 @@ function otsuBinarise(gray) {
   return bin;
 }
 
-
+/**
+ * ✅ FIX: Completely rewritten findCandidates.
+ *
+ * OLD problem: ROW_THRESH was 0.30. Interior rows (only left+right border black)
+ * had ~20% black — below threshold. So denseRows only caught top/bottom border
+ * rows as two separate groups, giving 4 tiny corner candidates instead of the
+ * full marker bounding box.
+ *
+ * NEW approach:
+ * 1. Lower ROW_THRESH to 0.05 so interior rows (with border on both sides) pass.
+ * 2. Add the FULL OUTER EXTENT of all dense rows/cols as the first candidate.
+ *    This ensures the whole marker is always evaluated first.
+ */
 function findCandidates(bin, imgW, imgH) {
   const rowBlack = new Int32Array(imgH);
   const colBlack = new Int32Array(imgW);
@@ -88,7 +98,8 @@ function findCandidates(bin, imgW, imgH) {
     }
   }
 
-  const ROW_THRESH = 0.05; 
+  // ✅ FIX: Lowered from 0.30 to 0.05 so interior marker rows pass the threshold
+  const ROW_THRESH = 0.05;
 
   const denseRows = [];
   const denseCols = [];
@@ -101,23 +112,27 @@ function findCandidates(bin, imgW, imgH) {
   const colGroups = contiguousGroups(denseCols, 5);
 
   const candidates = [];
-  for (const rg of rowGroups) {
-    for (const cg of colGroups) {
-      const x = cg[0];
-      const y = rg[0];
-      const w = cg[cg.length - 1] - cg[0] + 1;
-      const h = rg[rg.length - 1] - rg[0] + 1;
-      candidates.push({ x, y, w, h });
-    }
-  }
 
-  
-  candidates.unshift({
+  // ✅ FIX: Add FULL OUTER EXTENT as the very first candidate.
+  // This is the most likely correct bounding box for the whole marker.
+  candidates.push({
     x: denseCols[0],
     y: denseRows[0],
     w: denseCols[denseCols.length - 1] - denseCols[0] + 1,
     h: denseRows[denseRows.length - 1] - denseRows[0] + 1,
   });
+
+  // Also add cross-product of groups as fallback candidates
+  for (const rg of rowGroups) {
+    for (const cg of colGroups) {
+      candidates.push({
+        x: cg[0],
+        y: rg[0],
+        w: cg[cg.length - 1] - cg[0] + 1,
+        h: rg[rg.length - 1] - rg[0] + 1,
+      });
+    }
+  }
 
   return candidates;
 }
@@ -138,7 +153,6 @@ function contiguousGroups(sorted, maxGap) {
   return groups;
 }
 
-
 function regionBlackFrac(bin, imgW, rx, ry, rw, rh) {
   let black = 0;
   const x1 = Math.max(0, rx);
@@ -155,7 +169,6 @@ function regionBlackFrac(bin, imgW, rx, ry, rw, rh) {
   }
   return black / total;
 }
-
 
 function interiorWhiteFrac(bin, imgW, bx, by, bw, bh, borderPx) {
   const ix = bx + borderPx;
@@ -176,32 +189,25 @@ function interiorWhiteFrac(bin, imgW, bx, by, bw, bh, borderPx) {
   return total === 0 ? 0 : white / total;
 }
 
-
 function validateBorderSolid(bin, imgW, bx, by, bw, bh, borderPx) {
-
   const inset = Math.round(borderPx * 0.5);
-  const topOk = regionBlackFrac(bin, imgW, bx + inset, by, bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
-  const botOk = regionBlackFrac(bin, imgW, bx + inset, by + bh - borderPx, bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
-  const leftOk = regionBlackFrac(bin, imgW, bx, by + inset, borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
-  const rightOk = regionBlackFrac(bin, imgW, bx + bw - borderPx, by + inset, borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
-
+  const topOk   = regionBlackFrac(bin, imgW, bx + inset, by,                   bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
+  const botOk   = regionBlackFrac(bin, imgW, bx + inset, by + bh - borderPx,   bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
+  const leftOk  = regionBlackFrac(bin, imgW, bx,         by + inset,           borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
+  const rightOk = regionBlackFrac(bin, imgW, bx + bw - borderPx, by + inset,   borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
   return topOk && botOk && leftOk && rightOk;
 }
 
-
 function findAnchor(bin, imgW, bx, by, bw, bh, borderPx) {
   const side = Math.min(bw, bh);
-  const anchorSzMin = Math.round(side * ANCHOR_FRAC_MIN);
-  const anchorSzMax = Math.round(side * ANCHOR_FRAC_MAX);
   const anchorSz = Math.round(side * 0.16);
-
   const innerBorder = borderPx;
 
   const corners = [
-    { name: 'TL', x: bx + innerBorder, y: by + innerBorder, orientation: 0 },
-    { name: 'TR', x: bx + bw - innerBorder - anchorSz, y: by + innerBorder, orientation: 270 },
-    { name: 'BR', x: bx + bw - innerBorder - anchorSz, y: by + bh - innerBorder - anchorSz, orientation: 180 },
-    { name: 'BL', x: bx + innerBorder, y: by + bh - innerBorder - anchorSz, orientation: 90 },
+    { name: 'TL', x: bx + innerBorder,                        y: by + innerBorder,                        orientation: 0   },
+    { name: 'TR', x: bx + bw - innerBorder - anchorSz,        y: by + innerBorder,                        orientation: 270 },
+    { name: 'BR', x: bx + bw - innerBorder - anchorSz,        y: by + bh - innerBorder - anchorSz,        orientation: 180 },
+    { name: 'BL', x: bx + innerBorder,                        y: by + bh - innerBorder - anchorSz,        orientation: 90  },
   ];
 
   const results = corners.map(c => ({
@@ -209,56 +215,70 @@ function findAnchor(bin, imgW, bx, by, bw, bh, borderPx) {
     blackFrac: regionBlackFrac(bin, imgW, c.x, c.y, anchorSz, anchorSz),
   }));
 
-  const anchors = results.filter(r => r.blackFrac >= ANCHOR_BLACK_MIN);
+  // ✅ DEBUG: Log anchor black fractions to help diagnose detection failures
+  console.log('[detector] Anchor fracs:', results.map(r => `${r.name}=${r.blackFrac.toFixed(2)}`).join(' '));
+
+  const anchors    = results.filter(r => r.blackFrac >= ANCHOR_BLACK_MIN);
   const nonAnchors = results.filter(r => r.blackFrac < ANCHOR_BLACK_MIN);
 
-  if (anchors.length !== 1) return null;
+  if (anchors.length !== 1) {
+    console.log(`[detector] Expected 1 anchor, found ${anchors.length}`);
+    return null;
+  }
 
   const nonAnchorValid = nonAnchors.every(r => r.blackFrac < NON_ANCHOR_BLACK_MAX);
-  if (!nonAnchorValid) return null;
+  if (!nonAnchorValid) {
+    console.log('[detector] Non-anchor corners too dark');
+    return null;
+  }
 
   return anchors[0];
 }
 
-
 /**
- *
  * @param {Uint8ClampedArray|Uint8Array} rgba  Raw RGBA pixel data
  * @param {number} width
  * @param {number} height
  * @returns {{ found: boolean, bbox: {x,y,w,h}|null, orientation: number }}
- *   orientation: 0 | 90 | 180 | 270 (degrees to rotate CW to correct)
  */
 export function detectMarker(rgba, width, height) {
   const imageArea = width * height;
 
-  // Step 1 & 2
   const gray = toGrayscale(rgba, width, height);
-  const bin = otsuBinarise(gray);
+  const bin  = otsuBinarise(gray);
 
   const candidates = findCandidates(bin, width, height);
-  if (candidates.length === 0) return { found: false, bbox: null, orientation: 0 };
+  if (candidates.length === 0) {
+    console.log('[detector] No candidates found');
+    return { found: false, bbox: null, orientation: 0 };
+  }
 
+  console.log(`[detector] Evaluating ${candidates.length} candidates`);
+
+  // Sort largest area first — full outer extent candidate is already first but
+  // sorting ensures largest wins if multiple candidates are similar
   candidates.sort((a, b) => b.w * b.h - a.w * a.h);
 
   for (const bbox of candidates) {
     const { x, y, w, h } = bbox;
     const area = w * h;
 
- 
     const areaFrac = area / imageArea;
-    if (areaFrac < MIN_AREA_FRAC || areaFrac > MAX_AREA_FRAC) continue;
+    if (areaFrac < MIN_AREA_FRAC || areaFrac > MAX_AREA_FRAC) {
+      console.log(`[detector] Candidate rejected — areaFrac=${areaFrac.toFixed(3)}`);
+      continue;
+    }
 
-   
     const ar = w / h;
-    if (Math.abs(ar - 1.0) > SQUARENESS_TOL) continue;
-
+    if (Math.abs(ar - 1.0) > SQUARENESS_TOL) {
+      console.log(`[detector] Candidate rejected — aspectRatio=${ar.toFixed(3)}`);
+      continue;
+    }
 
     const side = Math.min(w, h);
     const borderPxMin = Math.round(side * BORDER_FRAC_MIN);
     const borderPxMax = Math.round(side * BORDER_FRAC_MAX);
 
-   
     let validBorderPx = -1;
     for (let bp = borderPxMin; bp <= borderPxMax; bp += Math.max(1, Math.round(side * 0.01))) {
       if (validateBorderSolid(bin, width, x, y, w, h, bp)) {
@@ -269,12 +289,16 @@ export function detectMarker(rgba, width, height) {
         }
       }
     }
-    if (validBorderPx < 0) continue;
 
-   
+    if (validBorderPx < 0) {
+      console.log('[detector] Candidate rejected — border/interior check failed');
+      continue;
+    }
+
     const anchorResult = findAnchor(bin, width, x, y, w, h, validBorderPx);
     if (!anchorResult) continue;
 
+    console.log(`[detector] ✅ Marker found! orientation=${anchorResult.orientation}`);
     return {
       found: true,
       bbox,
@@ -286,5 +310,5 @@ export function detectMarker(rgba, width, height) {
 }
 
 export function getRotationDegrees(orientation) {
-  return orientation; 
+  return orientation;
 }
