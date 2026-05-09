@@ -11,16 +11,16 @@ import {
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
-const MARKER_SIZE = 300;
 const CARD_OUTER_PAD = 16;
 const CARD_GAP = 10;
 const CARD_WIDTH = Math.floor((SCREEN_W - CARD_OUTER_PAD * 2 - CARD_GAP) / 2);
 
+const TARGET_COUNT = 20;
+
 export default function ResultsScreen({ navigation, route }) {
   const { markers = [] } = route.params ?? {};
-
   const stats = useMemo(() => {
-    if (markers.length === 0) return { avg: 0, min: 0, max: 0, total: 0 };
+    if (markers.length === 0) return { avg: '-', min: '-', max: '-', total: 0 };
     const times = markers.map((m) => m.processingTimeMs ?? 0);
     const total = times.reduce((s, t) => s + t, 0);
     return {
@@ -30,9 +30,10 @@ export default function ResultsScreen({ navigation, route }) {
       total: markers.length,
     };
   }, [markers]);
-
   const grade =
-    stats.avg < 1000
+    markers.length === 0
+      ? { label: 'No Data', color: '#666' }
+      : stats.avg < 1000
       ? { label: 'Excellent', color: '#00E5A0' }
       : stats.avg < 2000
       ? { label: 'Good', color: '#FFD60A' }
@@ -51,7 +52,6 @@ export default function ResultsScreen({ navigation, route }) {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scroll}
       >
-        {/* Performance Summary Card */}
         <View style={styles.summaryCard}>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryTitle}>Detection Results</Text>
@@ -61,10 +61,10 @@ export default function ResultsScreen({ navigation, route }) {
           </View>
 
           <View style={styles.statsRow}>
-            <StatItem label="Captured" value={`${stats.total}/20`} color="#00E5A0" />
-            <StatItem label="Avg Time" value={`${stats.avg}ms`} color="#007AFF" />
-            <StatItem label="Best" value={`${stats.min}ms`} color="#34C759" />
-            <StatItem label="Worst" value={`${stats.max}ms`} color="#FF9F0A" />
+            <StatItem label="Captured" value={`${stats.total}/${TARGET_COUNT}`} color="#00E5A0" />
+            <StatItem label="Avg Time" value={stats.avg === '-' ? '-' : `${stats.avg}ms`} color="#007AFF" />
+            <StatItem label="Best"     value={stats.min === '-' ? '-' : `${stats.min}ms`} color="#34C759" />
+            <StatItem label="Worst"    value={stats.max === '-' ? '-' : `${stats.max}ms`} color="#FF9F0A" />
           </View>
 
           <View style={styles.specRow}>
@@ -89,7 +89,7 @@ export default function ResultsScreen({ navigation, route }) {
                 marker ? (
                   <MarkerCard key={ci} marker={marker} index={ri * 2 + ci + 1} />
                 ) : (
-                  <View key={ci} style={{ width: CARD_WIDTH }} />
+                  <View key={ci} style={{ width: CARD_WIDTH, height: 1 }} />
                 )
               )}
             </View>
@@ -140,11 +140,11 @@ function MarkerCard({ marker, index }) {
         </View>
       </View>
 
-      {/* Marker image — file is exactly 300×300px per spec */}
       <Image
         source={{ uri: marker.uri }}
         style={styles.markerImg}
         resizeMode="cover"
+        onError={() => console.warn(`[ResultsScreen] Failed to load marker image #${index}: ${marker.uri}`)}
       />
 
       <Text style={styles.cardSize}>300 × 300 px</Text>
@@ -259,7 +259,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   markerImg: {
-    // File is 300×300px per spec; displayed to fill the card width
     width: '100%',
     aspectRatio: 1,
     backgroundColor: '#fff',

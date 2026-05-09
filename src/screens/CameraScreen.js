@@ -16,7 +16,10 @@ const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const FRAME_SIZE = Math.round(Math.min(SCREEN_W, SCREEN_H) * 0.72);
 
 const TARGET_COUNT = 20;
-const CAPTURE_INTERVAL_MS = 650;
+
+const CAPTURE_INTERVAL_MS = 500;
+
+const SCAN_TIMEOUT_MS = 30000; 
 
 export default function CameraScreen({ navigation }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -29,6 +32,7 @@ export default function CameraScreen({ navigation }) {
 
   const detectedMarkers = useRef([]);
   const intervalRef = useRef(null);
+  const timeoutRef = useRef(null);  
   const isMounted = useRef(true);
   const isProcessingRef = useRef(false);
 
@@ -41,10 +45,13 @@ export default function CameraScreen({ navigation }) {
     return () => {
       isMounted.current = false;
       clearInterval(intervalRef.current);
+      clearTimeout(timeoutRef.current);
+      scanAnim.stopAnimation();
+      pulseAnim.stopAnimation();
+      flashAnim.stopAnimation();
     };
   }, []);
 
-  
   useEffect(() => {
     if (isScanning) {
       Animated.loop(
@@ -64,6 +71,7 @@ export default function CameraScreen({ navigation }) {
         ])
       ).start();
     } else {
+      scanAnim.stopAnimation();
       scanAnim.setValue(0);
     }
   }, [isScanning]);
@@ -85,6 +93,7 @@ export default function CameraScreen({ navigation }) {
         ])
       ).start();
     } else {
+      pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
     }
   }, [isScanning]);
@@ -98,8 +107,7 @@ export default function CameraScreen({ navigation }) {
     }).start();
   }, [flashAnim]);
 
-  const onCameraReady = useCallback(() => {
-  }, []);
+  const onCameraReady = useCallback(() => {}, []);
 
   const captureAndProcess = useCallback(async () => {
     if (!cameraRef.current) return;
@@ -112,8 +120,8 @@ export default function CameraScreen({ navigation }) {
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 1.0,
-        skipProcessing: false,
+        quality: 0.6,           
+        skipProcessing: true,   
         exif: false,
       });
 
@@ -136,11 +144,12 @@ export default function CameraScreen({ navigation }) {
         flashOnDetect();
 
         if (count >= TARGET_COUNT) {
-          
           clearInterval(intervalRef.current);
           intervalRef.current = null;
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
           setIsScanning(false);
-          setStatus({ text: `✓ All 20 markers captured!`, type: 'done' });
+          setStatus({ text: `✓ All ${TARGET_COUNT} markers captured!`, type: 'done' });
           setTimeout(() => {
             if (isMounted.current) {
               navigation.navigate('Results', {
@@ -173,22 +182,39 @@ export default function CameraScreen({ navigation }) {
     }
   }, [flashOnDetect, navigation]);
 
+  const captureAndProcessRef = useRef(captureAndProcess);
+  useEffect(() => {
+    captureAndProcessRef.current = captureAndProcess;
+  }, [captureAndProcess]);
+  const stopScanning = useCallback(() => {
+    clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+    setIsScanning(false);
+    setStatus({ text: 'Scan paused', type: 'idle' });
+  }, []);
+
   const startScanning = useCallback(() => {
+    if (intervalRef.current) return;
+
     detectedMarkers.current = [];
     setDetectedCount(0);
     setIsScanning(true);
     setStatus({ text: 'Scanning for Marker 1…', type: 'scanning' });
 
     intervalRef.current = setInterval(() => {
-      captureAndProcess();
+      captureAndProcessRef.current();
     }, CAPTURE_INTERVAL_MS);
-  }, [captureAndProcess]);
 
-  const stopScanning = useCallback(() => {
-    clearInterval(intervalRef.current);
-    intervalRef.current = null;
-    setIsScanning(false);
-    setStatus({ text: 'Scan paused', type: 'idle' });
+    timeoutRef.current = setTimeout(() => {
+      if (isMounted.current && intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+        setIsScanning(false);
+        setStatus({ text: 'Scan timed out. Try again.', type: 'error' });
+      }
+    }, SCAN_TIMEOUT_MS);
   }, []);
 
   if (!permission) {
@@ -228,19 +254,16 @@ export default function CameraScreen({ navigation }) {
 
   const progressPct = (detectedCount / TARGET_COUNT) * 100;
 
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      {/* Camera */}
       <CameraView
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="back"
-        pictureSize="2048x2048"
+        pictureSize="1280x720"   
         onCameraReady={onCameraReady}
       />
 
-      
       <Animated.View
         style={[
           StyleSheet.absoluteFill,
@@ -248,16 +271,12 @@ export default function CameraScreen({ navigation }) {
         ]}
       />
 
-      
       <View style={styles.overlay}>
-        
         <View style={[styles.darkBand, { height: (SCREEN_H - FRAME_SIZE) / 2.5 }]} />
 
-        
         <View style={styles.frameRow}>
           <View style={styles.darkSide} />
 
-          
           <Animated.View
             style={[
               styles.scanFrame,
@@ -269,13 +288,11 @@ export default function CameraScreen({ navigation }) {
               },
             ]}
           >
-            
             <CornerBracket pos="TL" color={frameColor} />
             <CornerBracket pos="TR" color={frameColor} />
             <CornerBracket pos="BL" color={frameColor} />
             <CornerBracket pos="BR" color={frameColor} />
 
-            
             {isScanning && (
               <Animated.View
                 style={[
@@ -292,9 +309,7 @@ export default function CameraScreen({ navigation }) {
           <View style={styles.darkSide} />
         </View>
 
-        
         <View style={styles.bottomPanel}>
-          
           <View
             style={[
               styles.statusBadge,
@@ -370,7 +385,6 @@ export default function CameraScreen({ navigation }) {
   );
 }
 
-/** Corner bracket decoration for scan frame */
 function CornerBracket({ pos, color }) {
   const size = 22;
   const thick = 3;
@@ -389,7 +403,6 @@ function CornerBracket({ pos, color }) {
         right: !isLeft ? 0 : undefined,
       }}
     >
-      {/* Horizontal bar */}
       <View
         style={{
           position: 'absolute',
@@ -401,7 +414,6 @@ function CornerBracket({ pos, color }) {
           backgroundColor: color,
         }}
       />
-      {/* Vertical bar */}
       <View
         style={{
           position: 'absolute',
