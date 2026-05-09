@@ -1,14 +1,3 @@
-/**
- * CameraScreen.js
- *
- * Live camera feed with real-time Marker 1 detection.
- * - Captures frames every 600ms while scanning
- * - Shows animated scan-frame overlay with corner brackets
- * - Color-coded status feedback
- * - Progress bar tracking 20/20 captures
- * - Navigates to ResultsScreen when 20 unique markers captured
- */
-
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -43,7 +32,6 @@ export default function CameraScreen({ navigation }) {
   const isMounted = useRef(true);
   const isProcessingRef = useRef(false);
 
-  // Animated values
   const scanAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const flashAnim = useRef(new Animated.Value(0)).current;
@@ -56,7 +44,7 @@ export default function CameraScreen({ navigation }) {
     };
   }, []);
 
-  // Scanning line animation
+  
   useEffect(() => {
     if (isScanning) {
       Animated.loop(
@@ -80,7 +68,6 @@ export default function CameraScreen({ navigation }) {
     }
   }, [isScanning]);
 
-  // Corner bracket pulse
   useEffect(() => {
     if (isScanning) {
       Animated.loop(
@@ -102,7 +89,6 @@ export default function CameraScreen({ navigation }) {
     }
   }, [isScanning]);
 
-  // Flash on detection
   const flashOnDetect = useCallback(() => {
     flashAnim.setValue(1);
     Animated.timing(flashAnim, {
@@ -112,27 +98,9 @@ export default function CameraScreen({ navigation }) {
     }).start();
   }, [flashAnim]);
 
-  // ── Camera ready: negotiate picture size ─────────────────────────────────
-  const onCameraReady = useCallback(async () => {
-    try {
-      if (!cameraRef.current) return;
-      const sizes = await cameraRef.current.getAvailablePictureSizes?.();
-      if (!sizes || sizes.length === 0) return;
-
-      // Preferred sizes in the 2000–3000px range per spec
-      const preferred = ['2560x2560', '2048x2048', '2000x2000', '2592x2592', '3000x3000'];
-      for (const p of preferred) {
-        if (sizes.includes(p)) {
-          cameraRef.current._pictureSize = p;
-          return;
-        }
-      }
-    } catch (e) {
-      // Non-critical; keep default
-    }
+  const onCameraReady = useCallback(() => {
   }, []);
 
-  // ── Core capture + process loop ───────────────────────────────────────────
   const captureAndProcess = useCallback(async () => {
     if (!cameraRef.current) return;
     if (isProcessingRef.current) return;
@@ -168,7 +136,7 @@ export default function CameraScreen({ navigation }) {
         flashOnDetect();
 
         if (count >= TARGET_COUNT) {
-          // Done!
+          
           clearInterval(intervalRef.current);
           intervalRef.current = null;
           setIsScanning(false);
@@ -223,7 +191,6 @@ export default function CameraScreen({ navigation }) {
     setStatus({ text: 'Scan paused', type: 'idle' });
   }, []);
 
-  // ── Permission screens ─────────────────────────────────────────────────────
   if (!permission) {
     return (
       <View style={styles.centered}>
@@ -245,7 +212,6 @@ export default function CameraScreen({ navigation }) {
     );
   }
 
-  // ── Frame border color based on status ────────────────────────────────────
   const frameColor =
     status.type === 'success' || status.type === 'done'
       ? '#00E5A0'
@@ -270,10 +236,11 @@ export default function CameraScreen({ navigation }) {
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="back"
+        pictureSize="2048x2048"
         onCameraReady={onCameraReady}
       />
 
-      {/* Detection flash overlay */}
+      
       <Animated.View
         style={[
           StyleSheet.absoluteFill,
@@ -281,16 +248,16 @@ export default function CameraScreen({ navigation }) {
         ]}
       />
 
-      {/* Dark vignette + scan frame */}
+      
       <View style={styles.overlay}>
-        {/* Top dark band */}
+        
         <View style={[styles.darkBand, { height: (SCREEN_H - FRAME_SIZE) / 2.5 }]} />
 
-        {/* Scan frame row */}
+        
         <View style={styles.frameRow}>
           <View style={styles.darkSide} />
 
-          {/* The scan frame itself */}
+          
           <Animated.View
             style={[
               styles.scanFrame,
@@ -302,13 +269,13 @@ export default function CameraScreen({ navigation }) {
               },
             ]}
           >
-            {/* Corner brackets */}
+            
             <CornerBracket pos="TL" color={frameColor} />
             <CornerBracket pos="TR" color={frameColor} />
             <CornerBracket pos="BL" color={frameColor} />
             <CornerBracket pos="BR" color={frameColor} />
 
-            {/* Scanning line */}
+            
             {isScanning && (
               <Animated.View
                 style={[
@@ -325,9 +292,9 @@ export default function CameraScreen({ navigation }) {
           <View style={styles.darkSide} />
         </View>
 
-        {/* Bottom area: status + controls */}
+        
         <View style={styles.bottomPanel}>
-          {/* Status badge */}
+          
           <View
             style={[
               styles.statusBadge,

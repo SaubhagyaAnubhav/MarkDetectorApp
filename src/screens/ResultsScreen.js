@@ -1,10 +1,3 @@
-/**
- * ResultsScreen.js
- *
- * Displays the 20 extracted 300×300px marker images in a scrollable grid.
- * Shows per-capture timing and overall performance summary.
- */
-
 import React, { useMemo } from 'react';
 import {
   View,
@@ -18,9 +11,7 @@ import {
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
-// Spec: each marker displayed at exactly 300×300px
 const MARKER_SIZE = 300;
-// 2-column grid: calculate card width
 const CARD_OUTER_PAD = 16;
 const CARD_GAP = 10;
 const CARD_WIDTH = Math.floor((SCREEN_W - CARD_OUTER_PAD * 2 - CARD_GAP) / 2);
@@ -40,7 +31,6 @@ export default function ResultsScreen({ navigation, route }) {
     };
   }, [markers]);
 
-  // Performance grade
   const grade =
     stats.avg < 1000
       ? { label: 'Excellent', color: '#00E5A0' }
@@ -50,7 +40,6 @@ export default function ResultsScreen({ navigation, route }) {
       ? { label: 'Acceptable', color: '#FF9F0A' }
       : { label: 'Slow', color: '#FF453A' };
 
-  // Pair markers into rows of 2
   const rows = [];
   for (let i = 0; i < markers.length; i += 2) {
     rows.push([markers[i], markers[i + 1] ?? null]);
@@ -151,7 +140,7 @@ function MarkerCard({ marker, index }) {
         </View>
       </View>
 
-      {/* Marker image — spec: exactly 300×300px */}
+      {/* Marker image — file is exactly 300×300px per spec */}
       <Image
         source={{ uri: marker.uri }}
         style={styles.markerImg}
@@ -270,10 +259,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   markerImg: {
-    // Spec: displayed at exactly 300×300px
-    width: MARKER_SIZE,
-    height: MARKER_SIZE,
-    alignSelf: 'center',
+    // File is 300×300px per spec; displayed to fill the card width
+    width: '100%',
+    aspectRatio: 1,
     backgroundColor: '#fff',
   },
   cardSize: {

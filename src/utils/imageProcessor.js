@@ -1,33 +1,15 @@
-/**
- * imageProcessor.js
- *
- * Bridges expo-image-manipulator + jpeg-js with the Marker 1 detector.
- *
- * CRITICAL FIX: React Native's Hermes engine has NO atob() browser API.
- * We use a pure-JS base64 decoder that works in Hermes.
- *
- * Flow:
- *  1. Downscale photo to 400px wide (fast JS processing)
- *  2. Export as base64 JPEG via expo-image-manipulator
- *  3. Decode base64 → Uint8Array (Hermes-safe, no atob)
- *  4. Decode JPEG → RGBA pixels (jpeg-js)
- *  5. Run detectMarker(rgba, w, h) → { found, bbox, orientation }
- *  6. If found: crop original full-res → rotate → resize to 300×300
- *  7. Return processed URI
- */
 
 import * as ImageManipulator from 'expo-image-manipulator';
 import { detectMarker } from '../marker/detector';
 
-// Process at 400px wide — fast enough for smooth detection, accurate enough
+
 const PROCESS_WIDTH = 400;
-// All output markers must be exactly 300×300px (spec requirement)
+
 const OUTPUT_SIZE = 300;
 
-/**
- * Process a captured photo: detect the marker and return a 300×300 cropped URI.
+/**   
  *
- * @param {string} photoUri    URI from expo-camera
+ * @param {string} photoUri    
  * @param {{ width: number, height: number }} photoSize
  * @returns {Promise<{ success: boolean, uri: string|null, processingTimeMs: number }>}
  */
@@ -35,7 +17,6 @@ export async function processMarkerImage(photoUri, photoSize) {
   const t0 = Date.now();
 
   try {
-    // ── 1. Downscale for fast JS pixel processing ─────────────────────────
     const scaleW = PROCESS_WIDTH / photoSize.width;
     const processH = Math.round(photoSize.height * scaleW);
 
@@ -53,10 +34,8 @@ export async function processMarkerImage(photoUri, photoSize) {
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
 
-    // ── 2. Decode base64 → raw bytes (Hermes-safe: NO atob) ──────────────
     const jpegBytes = base64ToUint8Array(downscaled.base64);
 
-    // ── 3. Decode JPEG → RGBA pixel data ─────────────────────────────────
     const jpegJs = require('jpeg-js');
     let decoded;
     try {
@@ -68,15 +47,12 @@ export async function processMarkerImage(photoUri, photoSize) {
       console.warn('[imageProcessor] JPEG decode failed:', decodeErr.message);
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
-
-    // ── 4. Run marker detector ────────────────────────────────────────────
     const result = detectMarker(decoded.data, decoded.width, decoded.height);
 
     if (!result.found || !result.bbox) {
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
 
-    // ── 5. Scale bbox back to original full-res coordinates ───────────────
     const { bbox, orientation } = result;
     const invScaleW = photoSize.width / decoded.width;
     const invScaleH = photoSize.height / decoded.height;
@@ -91,13 +67,9 @@ export async function processMarkerImage(photoUri, photoSize) {
       photoSize.height - origY,
       Math.round(bbox.h * invScaleH)
     );
-
-    // Safety: ensure valid crop dimensions
     if (origW < 10 || origH < 10) {
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
-
-    // ── 6. Crop → rotate (if needed) → resize to 300×300 ─────────────────
     const actions = [
       { crop: { originX: origX, originY: origY, width: origW, height: origH } },
     ];
@@ -125,9 +97,7 @@ export async function processMarkerImage(photoUri, photoSize) {
   }
 }
 
-// ─── Hermes-safe Base64 decoder ──────────────────────────────────────────────
-// React Native's Hermes JS engine does NOT support atob(). This is a pure-JS
-// implementation that works identically in Hermes, V8, and browser environments.
+
 
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64_LOOKUP = (() => {
@@ -145,15 +115,14 @@ const B64_LOOKUP = (() => {
  * @returns {Uint8Array}
  */
 function base64ToUint8Array(b64) {
-  // Strip any data URI prefix (e.g. "data:image/jpeg;base64,")
+  
   const comma = b64.indexOf(',');
   if (comma >= 0) b64 = b64.slice(comma + 1);
 
-  // Remove non-base64 chars (newlines, spaces, padding awareness)
+  
   b64 = b64.replace(/[^A-Za-z0-9+/]/g, '');
 
   const len = b64.length;
-  // Calculate output byte count
   let bufLen = Math.floor((len * 3) / 4);
   if (b64[len - 1] === '=') bufLen--;
   if (b64[len - 2] === '=') bufLen--;
