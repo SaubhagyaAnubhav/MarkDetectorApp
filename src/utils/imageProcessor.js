@@ -1,15 +1,27 @@
-
 import * as ImageManipulator from 'expo-image-manipulator';
 import { detectMarker } from '../marker/detector';
 
+const jpegJs = require('jpeg-js');
 
-const PROCESS_WIDTH = 400;
+
+const PROCESS_WIDTH = 640;
 
 const OUTPUT_SIZE = 300;
 
-/**   
+/**
+ * @param {Promise} promise
+ * @param {number} ms
+ */
+function withTimeout(promise, ms) {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms)
+  );
+  return Promise.race([promise, timeout]);
+}
+
+/** .
  *
- * @param {string} photoUri    
+ * @param {string} photoUri
  * @param {{ width: number, height: number }} photoSize
  * @returns {Promise<{ success: boolean, uri: string|null, processingTimeMs: number }>}
  */
@@ -20,14 +32,18 @@ export async function processMarkerImage(photoUri, photoSize) {
     const scaleW = PROCESS_WIDTH / photoSize.width;
     const processH = Math.round(photoSize.height * scaleW);
 
-    const downscaled = await ImageManipulator.manipulateAsync(
-      photoUri,
-      [{ resize: { width: PROCESS_WIDTH, height: processH } }],
-      {
-        format: ImageManipulator.SaveFormat.JPEG,
-        compress: 0.85,
-        base64: true,
-      }
+    
+    const downscaled = await withTimeout(
+      ImageManipulator.manipulateAsync(
+        photoUri,
+        [{ resize: { width: PROCESS_WIDTH, height: processH } }],
+        {
+          format: ImageManipulator.SaveFormat.JPEG,
+          compress: 0.85,
+          base64: true,
+        }
+      ),
+      5000 
     );
 
     if (!downscaled.base64 || downscaled.base64.length === 0) {
@@ -36,20 +52,21 @@ export async function processMarkerImage(photoUri, photoSize) {
 
     const jpegBytes = base64ToUint8Array(downscaled.base64);
 
-    const jpegJs = require('jpeg-js');
     let decoded;
     try {
       decoded = jpegJs.decode(jpegBytes, {
         useTArray: true,
-        maxMemoryUsageInMB: 256,
+        maxMemoryUsageInMB: 64, 
       });
     } catch (decodeErr) {
       console.warn('[imageProcessor] JPEG decode failed:', decodeErr.message);
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
+
     const result = detectMarker(decoded.data, decoded.width, decoded.height);
 
     if (!result.found || !result.bbox) {
+      console.log('[imageProcessor] No marker found in frame');
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
 
@@ -67,9 +84,11 @@ export async function processMarkerImage(photoUri, photoSize) {
       photoSize.height - origY,
       Math.round(bbox.h * invScaleH)
     );
+
     if (origW < 10 || origH < 10) {
       return { success: false, uri: null, processingTimeMs: Date.now() - t0 };
     }
+
     const actions = [
       { crop: { originX: origX, originY: origY, width: origW, height: origH } },
     ];
@@ -80,10 +99,13 @@ export async function processMarkerImage(photoUri, photoSize) {
 
     actions.push({ resize: { width: OUTPUT_SIZE, height: OUTPUT_SIZE } });
 
-    const processed = await ImageManipulator.manipulateAsync(
-      photoUri,
-      actions,
-      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.93 }
+    const processed = await withTimeout(
+      ImageManipulator.manipulateAsync(
+        photoUri,
+        actions,
+        { format: ImageManipulator.SaveFormat.JPEG, compress: 0.95 }
+      ),
+      5000 
     );
 
     return {
@@ -98,7 +120,6 @@ export async function processMarkerImage(photoUri, photoSize) {
 }
 
 
-
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64_LOOKUP = (() => {
   const lookup = new Uint8Array(256);
@@ -109,29 +130,25 @@ const B64_LOOKUP = (() => {
 })();
 
 /**
- * Decode a base64 string to a Uint8Array.
- * Works in React Native (Hermes), no browser APIs required.
- * @param {string} b64 Base64-encoded string (with or without data-URI prefix)
+ * @param {string} b64
  * @returns {Uint8Array}
  */
 function base64ToUint8Array(b64) {
-  
   const comma = b64.indexOf(',');
   if (comma >= 0) b64 = b64.slice(comma + 1);
 
-  
+  const padCount = (b64.match(/=/g) || []).length;
+
   b64 = b64.replace(/[^A-Za-z0-9+/]/g, '');
 
   const len = b64.length;
-  let bufLen = Math.floor((len * 3) / 4);
-  if (b64[len - 1] === '=') bufLen--;
-  if (b64[len - 2] === '=') bufLen--;
+  const bufLen = Math.floor((len * 3) / 4) - padCount;
 
   const out = new Uint8Array(bufLen);
   let p = 0;
 
   for (let i = 0; i < len; i += 4) {
-    const e0 = B64_LOOKUP[b64.charCodeAt(i)] ?? 0;
+    const e0 = B64_LOOKUP[b64.charCodeAt(i)]     ?? 0;
     const e1 = B64_LOOKUP[b64.charCodeAt(i + 1)] ?? 0;
     const e2 = B64_LOOKUP[b64.charCodeAt(i + 2)] ?? 0;
     const e3 = B64_LOOKUP[b64.charCodeAt(i + 3)] ?? 0;
