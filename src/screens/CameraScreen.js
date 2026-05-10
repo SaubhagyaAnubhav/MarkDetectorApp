@@ -15,30 +15,54 @@ import { processMarkerImage } from '../utils/imageProcessor';
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const FRAME_SIZE = Math.round(Math.min(SCREEN_W, SCREEN_H) * 0.72);
 
-const TARGET_COUNT = 20;
-
+const TARGET_COUNT      = 20;
 const CAPTURE_INTERVAL_MS = 500;
+const SCAN_TIMEOUT_MS   = 30000;
 
-const SCAN_TIMEOUT_MS = 30000; 
+const MARKER_CONFIG = {
+  1: {
+    label:       'Marker 1',
+    description: '140×140mm · Solid border · Corner anchor',
+    accentColor: '#007AFF',
+    idleText:    'Point camera at Marker 1',
+    scanText:    'Scanning for Marker 1…',
+  },
+  2: {
+    label:       'Marker 2',
+    description: '160×160mm · L-shape border · Dashed top/right',
+    accentColor: '#BF5AF2',
+    idleText:    'Point camera at Marker 2',
+    scanText:    'Scanning for Marker 2…',
+  },
+};
+
 
 export default function CameraScreen({ navigation }) {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
+  const [markerType, setMarkerType]   = useState(1);
+  const markerTypeRef                 = useRef(1);
 
-  const [isScanning, setIsScanning] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [isScanning, setIsScanning]       = useState(false);
+  const [isProcessing, setIsProcessing]   = useState(false);
   const [detectedCount, setDetectedCount] = useState(0);
-  const [status, setStatus] = useState({ text: 'Point camera at Marker 1', type: 'idle' });
+  const [status, setStatus] = useState({
+    text: MARKER_CONFIG[1].idleText,
+    type: 'idle',
+  });
 
-  const detectedMarkers = useRef([]);
-  const intervalRef = useRef(null);
-  const timeoutRef = useRef(null);  
-  const isMounted = useRef(true);
-  const isProcessingRef = useRef(false);
+  const detectedMarkers    = useRef([]);
+  const intervalRef        = useRef(null);
+  const timeoutRef         = useRef(null);
+  const isMounted          = useRef(true);
+  const isProcessingRef    = useRef(false);
 
-  const scanAnim = useRef(new Animated.Value(0)).current;
+  const scanAnim  = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const flashAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    markerTypeRef.current = markerType;
+  }, [markerType]);
 
   useEffect(() => {
     isMounted.current = true;
@@ -51,6 +75,7 @@ export default function CameraScreen({ navigation }) {
       flashAnim.stopAnimation();
     };
   }, []);
+
 
   useEffect(() => {
     if (isScanning) {
@@ -76,20 +101,13 @@ export default function CameraScreen({ navigation }) {
     }
   }, [isScanning]);
 
+  
   useEffect(() => {
     if (isScanning) {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.04,
-            duration: 900,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 900,
-            useNativeDriver: true,
-          }),
+          Animated.timing(pulseAnim, { toValue: 1.04, duration: 900, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1,    duration: 900, useNativeDriver: true }),
         ])
       ).start();
     } else {
@@ -97,6 +115,9 @@ export default function CameraScreen({ navigation }) {
       pulseAnim.setValue(1);
     }
   }, [isScanning]);
+
+  
+  const accentColor = MARKER_CONFIG[markerType].accentColor;
 
   const flashOnDetect = useCallback(() => {
     flashAnim.setValue(1);
@@ -109,26 +130,27 @@ export default function CameraScreen({ navigation }) {
 
   const onCameraReady = useCallback(() => {}, []);
 
+  
   const captureAndProcess = useCallback(async () => {
-    if (!cameraRef.current) return;
-    if (isProcessingRef.current) return;
+    if (!cameraRef.current)                         return;
+    if (isProcessingRef.current)                    return;
     if (detectedMarkers.current.length >= TARGET_COUNT) return;
-    if (!isMounted.current) return;
+    if (!isMounted.current)                         return;
 
     isProcessingRef.current = true;
     setIsProcessing(true);
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.6,           
-        skipProcessing: true,   
+        quality: 0.6,
+        skipProcessing: true,
         exif: false,
       });
 
       if (!isMounted.current) return;
 
       const { uri, width, height } = photo;
-      const result = await processMarkerImage(uri, { width, height });
+      const result = await processMarkerImage(uri, { width, height }, markerTypeRef.current);
 
       if (!isMounted.current) return;
 
@@ -137,6 +159,9 @@ export default function CameraScreen({ navigation }) {
           uri: result.uri,
           processingTimeMs: result.processingTimeMs,
           timestamp: Date.now(),
+          markerType: markerTypeRef.current,
+          orientation: result.orientation ?? 0,
+          isCorrect: result.isCorrect ?? true,
         });
 
         const count = detectedMarkers.current.length;
@@ -154,12 +179,13 @@ export default function CameraScreen({ navigation }) {
             if (isMounted.current) {
               navigation.navigate('Results', {
                 markers: detectedMarkers.current,
+                markerType: markerTypeRef.current,
               });
             }
           }, 600);
         } else {
           setStatus({
-            text: `✓ Marker detected! ${count}/${TARGET_COUNT} — ${result.processingTimeMs}ms`,
+            text: `✓ Detected! ${count}/${TARGET_COUNT} — ${result.processingTimeMs}ms`,
             type: 'success',
           });
         }
@@ -175,17 +201,15 @@ export default function CameraScreen({ navigation }) {
         setStatus({ text: 'Capture error — retrying…', type: 'error' });
       }
     } finally {
-      if (isMounted.current) {
-        setIsProcessing(false);
-      }
+      if (isMounted.current) setIsProcessing(false);
       isProcessingRef.current = false;
     }
   }, [flashOnDetect, navigation]);
 
   const captureAndProcessRef = useRef(captureAndProcess);
-  useEffect(() => {
-    captureAndProcessRef.current = captureAndProcess;
-  }, [captureAndProcess]);
+  useEffect(() => { captureAndProcessRef.current = captureAndProcess; }, [captureAndProcess]);
+
+  
   const stopScanning = useCallback(() => {
     clearInterval(intervalRef.current);
     intervalRef.current = null;
@@ -195,18 +219,20 @@ export default function CameraScreen({ navigation }) {
     setStatus({ text: 'Scan paused', type: 'idle' });
   }, []);
 
+  
   const startScanning = useCallback(() => {
     if (intervalRef.current) return;
 
     detectedMarkers.current = [];
     setDetectedCount(0);
     setIsScanning(true);
-    setStatus({ text: 'Scanning for Marker 1…', type: 'scanning' });
+    setStatus({ text: MARKER_CONFIG[markerTypeRef.current].scanText, type: 'scanning' });
 
     intervalRef.current = setInterval(() => {
       captureAndProcessRef.current();
     }, CAPTURE_INTERVAL_MS);
 
+    clearTimeout(timeoutRef.current)
     timeoutRef.current = setTimeout(() => {
       if (isMounted.current && intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -217,6 +243,16 @@ export default function CameraScreen({ navigation }) {
     }, SCAN_TIMEOUT_MS);
   }, []);
 
+  
+  const switchMarkerType = useCallback((type) => {
+    if (isScanning) return;
+    setMarkerType(type);
+    setDetectedCount(0);
+    detectedMarkers.current = [];
+    setStatus({ text: MARKER_CONFIG[type].idleText, type: 'idle' });
+  }, [isScanning]);
+
+  
   if (!permission) {
     return (
       <View style={styles.centered}>
@@ -238,13 +274,14 @@ export default function CameraScreen({ navigation }) {
     );
   }
 
+  
   const frameColor =
     status.type === 'success' || status.type === 'done'
       ? '#00E5A0'
       : status.type === 'error'
       ? '#FF453A'
       : status.type === 'scanning'
-      ? '#007AFF'
+      ? accentColor
       : '#FFFFFF44';
 
   const scanLineY = scanAnim.interpolate({
@@ -253,27 +290,59 @@ export default function CameraScreen({ navigation }) {
   });
 
   const progressPct = (detectedCount / TARGET_COUNT) * 100;
+  const cfg = MARKER_CONFIG[markerType];
 
+  
   return (
     <View style={styles.container}>
       <CameraView
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="back"
-        pictureSize="1280x720"   
+        pictureSize="1280x720"
         onCameraReady={onCameraReady}
       />
 
+      
       <Animated.View
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: '#00E5A0', opacity: flashAnim, pointerEvents: 'none' },
+          { backgroundColor: accentColor, opacity: flashAnim, pointerEvents: 'none' },
         ]}
       />
 
       <View style={styles.overlay}>
-        <View style={[styles.darkBand, { height: (SCREEN_H - FRAME_SIZE) / 2.5 }]} />
+        
+        <View style={[styles.topPanel, { height: (SCREEN_H - FRAME_SIZE) / 2.5 }]}>
+          <View style={styles.typeSelector}>
+            {[1, 2].map((type) => {
+              const isActive = markerType === type;
+              const c = MARKER_CONFIG[type];
+              return (
+                <TouchableOpacity
+                  key={type}
+                  style={[
+                    styles.typeBtn,
+                    isActive && { backgroundColor: c.accentColor + '22', borderColor: c.accentColor },
+                    isScanning && styles.typeBtnDisabled,
+                  ]}
+                  onPress={() => switchMarkerType(type)}
+                  activeOpacity={isScanning ? 1 : 0.7}
+                  disabled={isScanning}
+                >
+                  <Text style={[styles.typeBtnLabel, isActive && { color: c.accentColor }]}>
+                    {c.label}
+                  </Text>
+                  <Text style={styles.typeBtnDesc} numberOfLines={1}>
+                    {c.description}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
 
+        
         <View style={styles.frameRow}>
           <View style={styles.darkSide} />
 
@@ -293,6 +362,16 @@ export default function CameraScreen({ navigation }) {
             <CornerBracket pos="BL" color={frameColor} />
             <CornerBracket pos="BR" color={frameColor} />
 
+            
+            {markerType === 2 && !isScanning && (
+              <View style={styles.m2Hint}>
+                <View style={[styles.m2HintLeft,   { borderColor: cfg.accentColor + '66' }]} />
+                <View style={[styles.m2HintBottom, { borderColor: cfg.accentColor + '66' }]} />
+                <View style={[styles.m2HintTop,   { borderColor: cfg.accentColor + '44', borderStyle: 'dashed' }]} />
+                <View style={[styles.m2HintRight, { borderColor: cfg.accentColor + '44', borderStyle: 'dashed' }]} />
+              </View>
+            )}
+
             {isScanning && (
               <Animated.View
                 style={[
@@ -309,7 +388,9 @@ export default function CameraScreen({ navigation }) {
           <View style={styles.darkSide} />
         </View>
 
+        
         <View style={styles.bottomPanel}>
+          
           <View
             style={[
               styles.statusBadge,
@@ -318,7 +399,7 @@ export default function CameraScreen({ navigation }) {
                 : status.type === 'error'
                 ? styles.badgeError
                 : status.type === 'scanning'
-                ? styles.badgeScanning
+                ? [styles.badgeScanning, { backgroundColor: accentColor + '28' }]
                 : styles.badgeIdle,
             ]}
           >
@@ -327,27 +408,28 @@ export default function CameraScreen({ navigation }) {
             </Text>
           </View>
 
-          {/* Progress bar */}
+          
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${progressPct}%`, backgroundColor: accentColor },
+              ]}
+            />
           </View>
           <Text style={styles.countLabel}>
             {detectedCount} / {TARGET_COUNT} markers captured
           </Text>
 
-          {/* Buttons */}
+          
           <View style={styles.controls}>
             {isProcessing && (
-              <ActivityIndicator
-                size="small"
-                color="#00E5A0"
-                style={{ marginRight: 12 }}
-              />
+              <ActivityIndicator size="small" color={accentColor} style={{ marginRight: 12 }} />
             )}
 
             {!isScanning ? (
               <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary]}
+                style={[styles.btn, styles.btnPrimary, { backgroundColor: accentColor }]}
                 onPress={startScanning}
                 activeOpacity={0.8}
               >
@@ -371,6 +453,7 @@ export default function CameraScreen({ navigation }) {
                 onPress={() =>
                   navigation.navigate('Results', {
                     markers: detectedMarkers.current,
+                    markerType,
                   })
                 }
                 activeOpacity={0.8}
@@ -385,10 +468,11 @@ export default function CameraScreen({ navigation }) {
   );
 }
 
+
 function CornerBracket({ pos, color }) {
-  const size = 22;
+  const size  = 22;
   const thick = 3;
-  const isTop = pos === 'TL' || pos === 'TR';
+  const isTop  = pos === 'TL' || pos === 'TR';
   const isLeft = pos === 'TL' || pos === 'BL';
 
   return (
@@ -397,19 +481,18 @@ function CornerBracket({ pos, color }) {
         position: 'absolute',
         width: size,
         height: size,
-        top: isTop ? 0 : undefined,
+        top:    isTop  ? 0 : undefined,
         bottom: !isTop ? 0 : undefined,
-        left: isLeft ? 0 : undefined,
-        right: !isLeft ? 0 : undefined,
+        left:   isLeft  ? 0 : undefined,
+        right:  !isLeft ? 0 : undefined,
       }}
     >
       <View
         style={{
           position: 'absolute',
-          left: 0,
-          right: 0,
+          left: 0, right: 0,
           height: thick,
-          top: isTop ? 0 : undefined,
+          top:    isTop  ? 0 : undefined,
           bottom: !isTop ? 0 : undefined,
           backgroundColor: color,
         }}
@@ -417,10 +500,9 @@ function CornerBracket({ pos, color }) {
       <View
         style={{
           position: 'absolute',
-          top: 0,
-          bottom: 0,
+          top: 0, bottom: 0,
           width: thick,
-          left: isLeft ? 0 : undefined,
+          left:  isLeft  ? 0 : undefined,
           right: !isLeft ? 0 : undefined,
           backgroundColor: color,
         }}
@@ -428,6 +510,7 @@ function CornerBracket({ pos, color }) {
     </View>
   );
 }
+
 
 const styles = StyleSheet.create({
   container: {
@@ -456,9 +539,42 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
   },
-  darkBand: {
-    backgroundColor: 'rgba(0,0,0,0.55)',
+
+  
+  topPanel: {
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'flex-end',
+    paddingBottom: 10,
+    paddingHorizontal: 16,
   },
+  typeSelector: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  typeBtn: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FFFFFF22',
+    backgroundColor: '#FFFFFF0A',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  typeBtnDisabled: {
+    opacity: 0.5,
+  },
+  typeBtnLabel: {
+    color: '#FFFFFF88',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  typeBtnDesc: {
+    color: '#FFFFFF44',
+    fontSize: 10,
+  },
+
+  
   frameRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -481,6 +597,37 @@ const styles = StyleSheet.create({
     height: 2,
     opacity: 0.75,
   },
+
+  m2Hint: {
+    position: 'absolute',
+    top: 20, left: 20, right: 20, bottom: 20,
+  },
+  m2HintLeft: {
+    position: 'absolute',
+    left: 0, top: 0, bottom: 0,
+    width: 2,
+    borderLeftWidth: 2,
+  },
+  m2HintBottom: {
+    position: 'absolute',
+    left: 0, right: 0, bottom: 0,
+    height: 2,
+    borderBottomWidth: 2,
+  },
+  m2HintTop: {
+    position: 'absolute',
+    left: 0, right: 0, top: 0,
+    height: 2,
+    borderTopWidth: 2,
+  },
+  m2HintRight: {
+    position: 'absolute',
+    right: 0, top: 0, bottom: 0,
+    width: 2,
+    borderRightWidth: 2,
+  },
+
+
   bottomPanel: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.82)',
@@ -496,10 +643,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     alignSelf: 'center',
   },
-  badgeIdle: { backgroundColor: '#FFFFFF18' },
+  badgeIdle:     { backgroundColor: '#FFFFFF18' },
   badgeScanning: { backgroundColor: '#007AFF28' },
-  badgeSuccess: { backgroundColor: '#00E5A028' },
-  badgeError: { backgroundColor: '#FF453A28' },
+  badgeSuccess:  { backgroundColor: '#00E5A028' },
+  badgeError:    { backgroundColor: '#FF453A28' },
   statusText: {
     color: '#fff',
     fontSize: 13,
@@ -514,7 +661,6 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#00E5A0',
     borderRadius: 3,
   },
   countLabel: {

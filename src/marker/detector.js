@@ -1,151 +1,100 @@
+'use strict';
+
+var BORDER_FRAC_MIN    = 0.08;
+var BORDER_FRAC_MAX    = 0.22;
+var MIN_AREA_FRAC      = 0.02;
+var MAX_AREA_FRAC      = 0.92;
+var SQUARENESS_TOL     = 0.25;
+var MIN_INTERIOR_WHITE = 0.50;
+var MIN_BORDER_BLACK   = 0.35;
+
+var ANCHOR_BLACK_MIN     = 0.40; 
+var NON_ANCHOR_BLACK_MAX = 0.35;  
+var ANCHOR_LARGE_SZ_FRAC = 0.28;  
+var M2_SOLID_BLACK_MIN  = 0.40;  
+var M2_DASHED_BLACK_MIN = 0.08;  
+var M2_DASHED_BLACK_MAX = 0.75;  
 
 
-const BORDER_FRAC_MIN = 0.04;
-const BORDER_FRAC_MAX = 0.25;
 
-const ANCHOR_FRAC_MIN = 0.08;
-const ANCHOR_FRAC_MAX = 0.24;
-const MIN_AREA_FRAC = 0.02;
-const MAX_AREA_FRAC = 0.92;
-
-const SQUARENESS_TOL = 0.35;         // ✅ FIX: was 0.25
-
-const MIN_INTERIOR_WHITE = 0.40;     
-const MIN_BORDER_BLACK   = 0.25;     
-const ANCHOR_BLACK_MIN   = 0.35;     
-const NON_ANCHOR_BLACK_MAX = 0.45;   
-
-/**
- * @param {Uint8ClampedArray|Uint8Array} rgba
- * @param {number} w
- * @param {number} h
- * @returns {Uint8Array}
- */
 function toGrayscale(rgba, w, h) {
-  const n = w * h;
-  const gray = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    const base = i * 4;
+  var n = w * h;
+  var gray = new Uint8Array(n);
+  for (var i = 0; i < n; i++) {
+    var base = i * 4;
     gray[i] = (77 * rgba[base] + 150 * rgba[base + 1] + 29 * rgba[base + 2]) >> 8;
   }
   return gray;
 }
 
-/**
- * Compute Otsu threshold and binarise.
- * @param {Uint8Array} gray
- * @returns {Uint8Array} binary — 0=black, 255=white
- */
 function otsuBinarise(gray) {
-  const hist = new Int32Array(256);
-  for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+  var hist = new Int32Array(256);
+  for (var i = 0; i < gray.length; i++) hist[gray[i]]++;
 
-  const total = gray.length;
-  let sum = 0;
-  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  var total = gray.length;
+  var sum = 0;
+  for (var t = 0; t < 256; t++) sum += t * hist[t];
 
-  let sumB = 0;
-  let wB = 0;
-  let maxVar = 0;
-  let threshold = 128;
-
-  for (let t = 0; t < 256; t++) {
+  var sumB = 0, wB = 0, maxVar = 0, threshold = 128;
+  for (var t = 0; t < 256; t++) {
     wB += hist[t];
     if (wB === 0) continue;
-    const wF = total - wB;
+    var wF = total - wB;
     if (wF === 0) break;
     sumB += t * hist[t];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const varBetween = wB * wF * (mB - mF) * (mB - mF);
-    if (varBetween > maxVar) {
-      maxVar = varBetween;
-      threshold = t;
-    }
+    var mB = sumB / wB;
+    var mF = (sum - sumB) / wF;
+    var v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxVar) { maxVar = v; threshold = t; }
   }
 
-  const bin = new Uint8Array(gray.length);
-  for (let i = 0; i < gray.length; i++) {
+  var bin = new Uint8Array(gray.length);
+  for (var i = 0; i < gray.length; i++) {
     bin[i] = gray[i] <= threshold ? 0 : 255;
   }
   return bin;
 }
 
-/**
- * ✅ FIX: Completely rewritten findCandidates.
- *
- * OLD problem: ROW_THRESH was 0.30. Interior rows (only left+right border black)
- * had ~20% black — below threshold. So denseRows only caught top/bottom border
- * rows as two separate groups, giving 4 tiny corner candidates instead of the
- * full marker bounding box.
- *
- * NEW approach:
- * 1. Lower ROW_THRESH to 0.05 so interior rows (with border on both sides) pass.
- * 2. Add the FULL OUTER EXTENT of all dense rows/cols as the first candidate.
- *    This ensures the whole marker is always evaluated first.
- */
-function findCandidates(bin, imgW, imgH) {
-  const rowBlack = new Int32Array(imgH);
-  const colBlack = new Int32Array(imgW);
-
-  for (let y = 0; y < imgH; y++) {
-    const base = y * imgW;
-    for (let x = 0; x < imgW; x++) {
-      if (bin[base + x] === 0) {
-        rowBlack[y]++;
-        colBlack[x]++;
-      }
+function regionBlackFrac(bin, imgW, rx, ry, rw, rh) {
+  var x1 = Math.max(0, rx);
+  var y1 = Math.max(0, ry);
+  var x2 = Math.min(imgW - 1, rx + rw - 1);
+  var y2 = ry + rh - 1;
+  if (x2 < x1 || y2 < y1) return 0;
+  var black = 0;
+  var total = (x2 - x1 + 1) * (y2 - y1 + 1);
+  for (var y = y1; y <= y2; y++) {
+    var base = y * imgW;
+    for (var x = x1; x <= x2; x++) {
+      if (bin[base + x] === 0) black++;
     }
   }
+  return black / total;
+}
 
-  // ✅ FIX: Increased back to 0.08. Instead of relying on interior rows to pass,
-  // we will combine pairs of row/col groups to form candidates.
-  const ROW_THRESH = 0.08;
-
-  const denseRows = [];
-  const denseCols = [];
-  for (let y = 0; y < imgH; y++) if (rowBlack[y] / imgW >= ROW_THRESH) denseRows.push(y);
-  for (let x = 0; x < imgW; x++) if (colBlack[x] / imgH >= ROW_THRESH) denseCols.push(x);
-
-  if (denseRows.length === 0 || denseCols.length === 0) return [];
-
-  const rowGroups = contiguousGroups(denseRows, 10);
-  const colGroups = contiguousGroups(denseCols, 10);
-
-  const candidates = [];
-
-  // ✅ FIX: Generate candidates from ALL PAIRS of row groups and col groups.
-  // This guarantees that even if the top border and bottom border are split
-  // into separate groups, they will be combined to form the correct full marker box!
-  for (let ri = 0; ri < rowGroups.length; ri++) {
-    for (let rj = ri; rj < rowGroups.length; rj++) {
-      for (let ci = 0; ci < colGroups.length; ci++) {
-        for (let cj = ci; cj < colGroups.length; cj++) {
-          const r1 = rowGroups[ri][0];
-          const r2 = rowGroups[rj][rowGroups[rj].length - 1];
-          const c1 = colGroups[ci][0];
-          const c2 = colGroups[cj][colGroups[cj].length - 1];
-          
-          const w = c2 - c1 + 1;
-          const h = r2 - r1 + 1;
-          
-          // Ignore impossibly small candidates to save processing
-          if (w < 20 || h < 20) continue;
-          
-          candidates.push({ x: c1, y: r1, w, h });
-        }
-      }
+function interiorWhiteFrac(bin, imgW, bx, by, bw, bh, borderPx) {
+  var ix = bx + borderPx;
+  var iy = by + borderPx;
+  var iw = bw - 2 * borderPx;
+  var ih = bh - 2 * borderPx;
+  if (iw <= 0 || ih <= 0) return 0;
+  var white = 0, total = 0;
+  var x2 = Math.min(imgW - 1, ix + iw - 1);
+  for (var y = iy; y < iy + ih; y++) {
+    var base = y * imgW;
+    for (var x = ix; x <= x2; x++) {
+      total++;
+      if (bin[base + x] === 255) white++;
     }
   }
-
-  return candidates;
+  return total === 0 ? 0 : white / total;
 }
 
 function contiguousGroups(sorted, maxGap) {
   if (sorted.length === 0) return [];
-  const groups = [];
-  let cur = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
+  var groups = [];
+  var cur = [sorted[0]];
+  for (var i = 1; i < sorted.length; i++) {
     if (sorted[i] - sorted[i - 1] <= maxGap) {
       cur.push(sorted[i]);
     } else {
@@ -157,151 +106,157 @@ function contiguousGroups(sorted, maxGap) {
   return groups;
 }
 
-function regionBlackFrac(bin, imgW, rx, ry, rw, rh) {
-  let black = 0;
-  const x1 = Math.max(0, rx);
-  const y1 = Math.max(0, ry);
-  const x2 = Math.min(imgW - 1, rx + rw - 1);
-  const y2 = ry + rh - 1;
-  if (x2 < x1 || y2 < y1) return 0;
-  const total = (x2 - x1 + 1) * (y2 - y1 + 1);
-  for (let y = y1; y <= y2; y++) {
-    const base = y * imgW;
-    for (let x = x1; x <= x2; x++) {
-      if (bin[base + x] === 0) black++;
+function findCandidates(bin, imgW, imgH) {
+  var rowBlack = new Int32Array(imgH);
+  var colBlack = new Int32Array(imgW);
+
+  for (var y = 0; y < imgH; y++) {
+    var base = y * imgW;
+    for (var x = 0; x < imgW; x++) {
+      if (bin[base + x] === 0) {
+        rowBlack[y]++;
+        colBlack[x]++;
+      }
     }
   }
-  return black / total;
+
+  var ROW_THRESH = 0.05;
+  var denseRows = [];
+  var denseCols = [];
+  for (var y = 0; y < imgH; y++) if (rowBlack[y] / imgW >= ROW_THRESH) denseRows.push(y);
+  for (var x = 0; x < imgW; x++) if (colBlack[x] / imgH >= ROW_THRESH) denseCols.push(x);
+  if (denseRows.length === 0 || denseCols.length === 0) return [];
+
+  var rowGroups = contiguousGroups(denseRows, 5);
+  var colGroups = contiguousGroups(denseCols, 5);
+
+  var candidates = [];
+
+  
+  candidates.push({
+    x: denseCols[0],
+    y: denseRows[0],
+    w: denseCols[denseCols.length - 1] - denseCols[0] + 1,
+    h: denseRows[denseRows.length - 1] - denseRows[0] + 1,
+  });
+
+  for (var ri = 0; ri < rowGroups.length; ri++) {
+    for (var ci = 0; ci < colGroups.length; ci++) {
+      var rg = rowGroups[ri];
+      var cg = colGroups[ci];
+      candidates.push({
+        x: cg[0],
+        y: rg[0],
+        w: cg[cg.length - 1] - cg[0] + 1,
+        h: rg[rg.length - 1] - rg[0] + 1,
+      });
+    }
+  }
+
+  return candidates;
 }
 
-function interiorWhiteFrac(bin, imgW, bx, by, bw, bh, borderPx) {
-  const ix = bx + borderPx;
-  const iy = by + borderPx;
-  const iw = bw - 2 * borderPx;
-  const ih = bh - 2 * borderPx;
-  if (iw <= 0 || ih <= 0) return 0;
-  let white = 0;
-  let total = 0;
-  const x2 = Math.min(imgW - 1, ix + iw - 1);
-  for (let y = iy; y < iy + ih; y++) {
-    const base = y * imgW;
-    for (let x = ix; x <= x2; x++) {
-      total++;
-      if (bin[base + x] === 255) white++;
-    }
-  }
-  return total === 0 ? 0 : white / total;
-}
+
+
 
 function validateBorderSolid(bin, imgW, bx, by, bw, bh, borderPx) {
-  const inset = Math.round(borderPx * 0.5);
-  const topOk   = regionBlackFrac(bin, imgW, bx + inset, by,                   bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
-  const botOk   = regionBlackFrac(bin, imgW, bx + inset, by + bh - borderPx,   bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
-  const leftOk  = regionBlackFrac(bin, imgW, bx,         by + inset,           borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
-  const rightOk = regionBlackFrac(bin, imgW, bx + bw - borderPx, by + inset,   borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
+  var inset = Math.round(borderPx * 0.5);
+  var topOk   = regionBlackFrac(bin, imgW, bx + inset, by,                  bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
+  var botOk   = regionBlackFrac(bin, imgW, bx + inset, by + bh - borderPx,  bw - 2 * inset, borderPx) >= MIN_BORDER_BLACK;
+  var leftOk  = regionBlackFrac(bin, imgW, bx,         by + inset,          borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
+  var rightOk = regionBlackFrac(bin, imgW, bx + bw - borderPx, by + inset,  borderPx, bh - 2 * inset) >= MIN_BORDER_BLACK;
   return topOk && botOk && leftOk && rightOk;
 }
 
-function findAnchor(bin, imgW, bx, by, bw, bh, borderPx) {
-  const side = Math.min(bw, bh);
-  const anchorSz = Math.round(side * 0.16);
-  const innerBorder = borderPx;
+function findAnchorWithSizeCheck(bin, imgW, bx, by, bw, bh, borderPx) {
+  var side    = Math.min(bw, bh);
+  var smallSz = Math.round(side * 0.16);         
+  var largeSz = Math.round(side * ANCHOR_LARGE_SZ_FRAC); 
+  var inner   = borderPx;
 
-  // ✅ FIX: Check multiple offsets to handle markers with a gap between border and anchor
-  const offsets = [
-    innerBorder,
-    innerBorder + Math.round(side * 0.04),
-    innerBorder + Math.round(side * 0.08),
-    innerBorder + Math.round(side * 0.12),
-    innerBorder + Math.round(side * 0.16)
+  var corners = [
+    { name: 'TL', x: bx + inner,                 y: by + inner,                 orientation: 0   },
+    { name: 'TR', x: bx + bw - inner - smallSz,  y: by + inner,                 orientation: 270 },
+    { name: 'BR', x: bx + bw - inner - smallSz,  y: by + bh - inner - smallSz,  orientation: 180 },
+    { name: 'BL', x: bx + inner,                  y: by + bh - inner - smallSz,  orientation: 90  },
   ];
 
-  function getCornerMaxBlack(isLeft, isTop) {
-    let maxF = 0;
-    for (const off of offsets) {
-      const x = isLeft ? bx + off : bx + bw - off - anchorSz;
-      const y = isTop  ? by + off : by + bh - off - anchorSz;
-      const f = regionBlackFrac(bin, imgW, x, y, anchorSz, anchorSz);
-      if (f > maxF) maxF = f;
-    }
-    return maxF;
+  var results = corners.map(function(c) {
+    return {
+      name       : c.name,
+      orientation: c.orientation,
+      x          : c.x,
+      y          : c.y,
+      smallBlack : regionBlackFrac(bin, imgW, c.x, c.y, smallSz, smallSz),
+      largeBlack : regionBlackFrac(bin, imgW, c.x, c.y, smallSz * 2, smallSz * 2),
+    };
+  });
+
+  console.log('[detector M1] Anchor fracs: ' +
+    results.map(function(r) {
+      return r.name + '=s:' + r.smallBlack.toFixed(2) + ',l:' + r.largeBlack.toFixed(2);
+    }).join(' ')
+  );
+
+  var anchors    = results.filter(function(r) { return r.smallBlack >= ANCHOR_BLACK_MIN; });
+  var nonAnchors = results.filter(function(r) { return r.smallBlack <  ANCHOR_BLACK_MIN; });
+
+  if (anchors.length === 0) {
+    return { detected: false, isCorrect: false, reason: 'Missing anchor square', orientation: 0 };
+  }
+  if (anchors.length > 1) {
+    return { detected: false, isCorrect: false, reason: 'Multiple dark corner regions detected', orientation: 0 };
   }
 
-  const corners = [
-    { name: 'TL', orientation: 0,   blackFrac: getCornerMaxBlack(true, true) },
-    { name: 'TR', orientation: 270, blackFrac: getCornerMaxBlack(false, true) },
-    { name: 'BR', orientation: 180, blackFrac: getCornerMaxBlack(false, false) },
-    { name: 'BL', orientation: 90,  blackFrac: getCornerMaxBlack(true, false) },
-  ];
-
-  // ✅ DEBUG: Log anchor black fractions to help diagnose detection failures
-  console.log('[detector] Anchor fracs:', corners.map(r => `${r.name}=${r.blackFrac.toFixed(2)}`).join(' '));
-
-  const anchors    = corners.filter(r => r.blackFrac >= ANCHOR_BLACK_MIN);
-  const nonAnchors = corners.filter(r => r.blackFrac < ANCHOR_BLACK_MIN);
-
-  if (anchors.length !== 1) {
-    console.log(`[detector] Expected 1 anchor, found ${anchors.length}`);
-    return null;
-  }
-
-  const nonAnchorValid = nonAnchors.every(r => r.blackFrac < NON_ANCHOR_BLACK_MAX);
+  var nonAnchorValid = nonAnchors.every(function(r) { return r.smallBlack < NON_ANCHOR_BLACK_MAX; });
   if (!nonAnchorValid) {
-    console.log('[detector] Non-anchor corners too dark');
-    return null;
+    return { detected: false, isCorrect: false, reason: 'Unexpected dark regions in non-anchor corners', orientation: 0 };
   }
 
-  return anchors[0];
+  var anchor = anchors[0];
+
+  if (anchor.largeBlack >= ANCHOR_BLACK_MIN) {
+    return { detected: true, isCorrect: false, reason: 'Anchor square is too large', orientation: anchor.orientation };
+  }
+
+  return { detected: true, isCorrect: true, reason: '', orientation: anchor.orientation };
 }
 
-/**
- * @param {Uint8ClampedArray|Uint8Array} rgba  Raw RGBA pixel data
- * @param {number} width
- * @param {number} height
- * @returns {{ found: boolean, bbox: {x,y,w,h}|null, orientation: number }}
- */
-export function detectMarker(rgba, width, height) {
-  const imageArea = width * height;
-
-  const gray = toGrayscale(rgba, width, height);
-  const bin  = otsuBinarise(gray);
-
-  const candidates = findCandidates(bin, width, height);
+function detectMarker1Internal(bin, imgW, imgH, imageArea) {
+  var candidates = findCandidates(bin, imgW, imgH);
   if (candidates.length === 0) {
-    console.log('[detector] No candidates found');
-    return { found: false, bbox: null, orientation: 0 };
+    console.log('[detector M1] No candidates found');
+    return { found: false, isCorrect: false, reason: 'No marker detected', bbox: null, orientation: 0 };
   }
 
-  console.log(`[detector] Evaluating ${candidates.length} candidates`);
+  candidates.sort(function(a, b) { return (b.w * b.h) - (a.w * a.h); });
+  console.log('[detector M1] Evaluating ' + candidates.length + ' candidates');
 
-  // Sort largest area first — full outer extent candidate is already first but
-  // sorting ensures largest wins if multiple candidates are similar
-  candidates.sort((a, b) => b.w * b.h - a.w * a.h);
+  for (var i = 0; i < candidates.length; i++) {
+    var bbox = candidates[i];
+    var x = bbox.x, y = bbox.y, w = bbox.w, h = bbox.h;
 
-  for (const bbox of candidates) {
-    const { x, y, w, h } = bbox;
-    const area = w * h;
-
-    const areaFrac = area / imageArea;
+    var areaFrac = (w * h) / imageArea;
     if (areaFrac < MIN_AREA_FRAC || areaFrac > MAX_AREA_FRAC) {
-      console.log(`[detector] Candidate rejected — areaFrac=${areaFrac.toFixed(3)}`);
+      console.log('[detector M1] Rejected — areaFrac=' + areaFrac.toFixed(3));
       continue;
     }
 
-    const ar = w / h;
+    var ar = w / h;
     if (Math.abs(ar - 1.0) > SQUARENESS_TOL) {
-      console.log(`[detector] Candidate rejected — aspectRatio=${ar.toFixed(3)}`);
+      console.log('[detector M1] Rejected — aspectRatio=' + ar.toFixed(3));
       continue;
     }
 
-    const side = Math.min(w, h);
-    const borderPxMin = Math.round(side * BORDER_FRAC_MIN);
-    const borderPxMax = Math.round(side * BORDER_FRAC_MAX);
+    var side   = Math.min(w, h);
+    var bpMin  = Math.round(side * BORDER_FRAC_MIN);
+    var bpMax  = Math.round(side * BORDER_FRAC_MAX);
+    var bpStep = Math.max(1, Math.round(side * 0.01));
+    var validBorderPx = -1;
 
-    let validBorderPx = -1;
-    for (let bp = borderPxMin; bp <= borderPxMax; bp += Math.max(1, Math.round(side * 0.01))) {
-      if (validateBorderSolid(bin, width, x, y, w, h, bp)) {
-        const white = interiorWhiteFrac(bin, width, x, y, w, h, bp);
+    for (var bp = bpMin; bp <= bpMax; bp += bpStep) {
+      if (validateBorderSolid(bin, imgW, x, y, w, h, bp)) {
+        var white = interiorWhiteFrac(bin, imgW, x, y, w, h, bp);
         if (white >= MIN_INTERIOR_WHITE) {
           validBorderPx = bp;
           break;
@@ -310,24 +265,148 @@ export function detectMarker(rgba, width, height) {
     }
 
     if (validBorderPx < 0) {
-      console.log('[detector] Candidate rejected — border/interior check failed');
+      console.log('[detector M1] Rejected — border/interior check failed');
       continue;
     }
 
-    const anchorResult = findAnchor(bin, width, x, y, w, h, validBorderPx);
-    if (!anchorResult) continue;
+    
+    var anchorResult = findAnchorWithSizeCheck(bin, imgW, x, y, w, h, validBorderPx);
 
-    console.log(`[detector] ✅ Marker found! orientation=${anchorResult.orientation}`);
+    console.log('[detector M1] found=true isCorrect=' + anchorResult.isCorrect + ' reason="' + anchorResult.reason + '"');
     return {
-      found: true,
-      bbox,
+      found      : true,
+      isCorrect  : anchorResult.isCorrect,
+      reason     : anchorResult.reason,
+      bbox       : bbox,
       orientation: anchorResult.orientation,
     };
   }
 
-  return { found: false, bbox: null, orientation: 0 };
+  return { found: false, isCorrect: false, reason: 'No Marker 1 structure detected', bbox: null, orientation: 0 };
 }
 
-export function getRotationDegrees(orientation) {
+
+
+function detectMarker2Internal(bin, imgW, imgH, imageArea) {
+  var candidates = findCandidates(bin, imgW, imgH);
+  if (candidates.length === 0) {
+    console.log('[detector M2] No candidates found');
+    return { found: false, isCorrect: false, reason: 'No marker detected', bbox: null, orientation: 0 };
+  }
+
+  candidates.sort(function(a, b) { return (b.w * b.h) - (a.w * a.h); });
+  console.log('[detector M2] Evaluating ' + candidates.length + ' candidates');
+
+  for (var i = 0; i < candidates.length; i++) {
+    var bbox = candidates[i];
+    var x = bbox.x, y = bbox.y, w = bbox.w, h = bbox.h;
+
+    var areaFrac = (w * h) / imageArea;
+    if (areaFrac < MIN_AREA_FRAC || areaFrac > MAX_AREA_FRAC) {
+      console.log('[detector M2] Rejected — areaFrac=' + areaFrac.toFixed(3));
+      continue;
+    }
+
+    var ar = w / h;
+    if (Math.abs(ar - 1.0) > SQUARENESS_TOL) {
+      console.log('[detector M2] Rejected — aspectRatio=' + ar.toFixed(3));
+      continue;
+    }
+
+    var side   = Math.min(w, h);
+    var bpMin  = Math.round(side * BORDER_FRAC_MIN);
+    var bpMax  = Math.round(side * BORDER_FRAC_MAX);
+    var bpStep = Math.max(1, Math.round(side * 0.01));
+    var validBorderPx = -1;
+    var leftBlack = 0, bottomBlack = 0;
+
+
+    for (var bp = bpMin; bp <= bpMax; bp += bpStep) {
+      var inset  = Math.round(bp * 0.5);
+      leftBlack   = regionBlackFrac(bin, imgW, x,           y + inset,     bp,            h - 2 * inset);
+      bottomBlack = regionBlackFrac(bin, imgW, x + inset,   y + h - bp,    w - 2 * inset, bp);
+      var white   = interiorWhiteFrac(bin, imgW, x, y, w, h, bp);
+
+      if (leftBlack >= M2_SOLID_BLACK_MIN && bottomBlack >= M2_SOLID_BLACK_MIN && white >= MIN_INTERIOR_WHITE) {
+        validBorderPx = bp;
+        break;
+      }
+    }
+
+    if (validBorderPx < 0) {
+      console.log('[detector M2] Rejected — L-shape border not found');
+      continue;
+    }
+
+      
+    var bp2    = validBorderPx;
+    var inset2 = Math.round(bp2 * 0.5);
+    var topBlack   = regionBlackFrac(bin, imgW, x + inset2,    y,           w - 2 * inset2, bp2);
+    var rightBlack = regionBlackFrac(bin, imgW, x + w - bp2,   y + inset2,  bp2,            h - 2 * inset2);
+
+    console.log('[detector M2] bp=' + bp2 +
+      ' left=' + leftBlack.toFixed(2) +
+      ' bottom=' + bottomBlack.toFixed(2) +
+      ' top=' + topBlack.toFixed(2) +
+      ' right=' + rightBlack.toFixed(2)
+    );
+
+    var topDashed   = topBlack   >= M2_DASHED_BLACK_MIN && topBlack   <= M2_DASHED_BLACK_MAX;
+    var rightDashed = rightBlack >= M2_DASHED_BLACK_MIN && rightBlack <= M2_DASHED_BLACK_MAX;
+    var isCorrect   = topDashed && rightDashed;
+
+    var reason = '';
+    if (!isCorrect) {
+      if (!topDashed && !rightDashed) {
+        reason = 'Top and right border dashed pattern missing';
+      } else if (!topDashed) {
+        reason = 'Top border dashed pattern incorrect (' + (topBlack * 100).toFixed(0) + '% black)';
+      } else {
+        reason = 'Right border dashed pattern incorrect (' + (rightBlack * 100).toFixed(0) + '% black)';
+      }
+    }
+
+    console.log('[detector M2] found=true isCorrect=' + isCorrect + ' reason="' + reason + '"');
+    return { found: true, isCorrect: isCorrect, reason: reason, bbox: bbox, orientation: 0 };
+  }
+
+  return { found: false, isCorrect: false, reason: 'No Marker 2 structure detected', bbox: null, orientation: 0 };
+}
+
+
+
+
+/**
+ * Detect a marker in RGBA image data.
+ *
+ * @param {Uint8ClampedArray|Uint8Array} rgba   Raw RGBA pixel data
+ * @param {number} width
+ * @param {number} height
+ * @param {1|2}   markerType                 
+ *
+ * @returns {{
+ *   found      : boolean,
+ *   isCorrect  : boolean,
+ *   reason     : string,      // human-readable reason when isCorrect=false
+ *   bbox       : {x,y,w,h} | null,
+ *   orientation: number       // 0 | 90 | 180 | 270 (only meaningful for Marker 1)
+ * }}
+ */
+function detectMarker(rgba, width, height, markerType) {
+  if (markerType === undefined) markerType = 1;
+
+  var gray      = toGrayscale(rgba, width, height);
+  var bin       = otsuBinarise(gray);
+  var imageArea = width * height;
+
+  if (markerType === 2) {
+    return detectMarker2Internal(bin, width, height, imageArea);
+  }
+  return detectMarker1Internal(bin, width, height, imageArea);
+}
+
+function getRotationDegrees(orientation) {
   return orientation;
 }
+
+module.exports = { detectMarker: detectMarker, getRotationDegrees: getRotationDegrees };
