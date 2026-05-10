@@ -5,7 +5,7 @@ const jpegJs = require('jpeg-js');
 
 
 
-const PROCESS_WIDTH = 640;  
+const PROCESS_WIDTH = 400;
 const OUTPUT_SIZE   = 300;  
 
 
@@ -29,8 +29,7 @@ function withTimeout(promise, ms) {
  *
  * @param {string}                          photoUri
  * @param {{ width: number, height: number }} photoSize
- * @param {1|2}                             markerType  1 = Marker 1, 2 = Marker 2
- *
+ * @param {1|2}                             markerType  
  * @returns {Promise<{
  *   success         : boolean,
  *   uri             : string | null,
@@ -64,6 +63,7 @@ export async function processMarkerImage(photoUri, photoSize, markerType = 1) {
       ImageManipulator.manipulateAsync(
         photoUri,
         [
+          { crop: { originX: cropX, originY: cropY, width: cropSz, height: cropSz } },
           { resize: { width: PROCESS_WIDTH, height: PROCESS_WIDTH } },
         ],
         {
