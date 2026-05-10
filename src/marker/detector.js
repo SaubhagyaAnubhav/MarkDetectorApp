@@ -7,12 +7,11 @@ var MAX_AREA_FRAC      = 0.92;
 var SQUARENESS_TOL     = 0.25;
 var MIN_INTERIOR_WHITE = 0.50;
 var MIN_BORDER_BLACK   = 0.35;
-
-var ANCHOR_BLACK_MIN     = 0.40; 
+var ANCHOR_BLACK_MIN     = 0.50;  
 var NON_ANCHOR_BLACK_MAX = 0.35;  
-var ANCHOR_LARGE_SZ_FRAC = 0.28;  
-var M2_SOLID_BLACK_MIN  = 0.40;  
-var M2_DASHED_BLACK_MIN = 0.08;  
+var ANCHOR_LARGE_SZ_FRAC = 0.28; 
+var M2_SOLID_BLACK_MIN  = 0.50;  
+var M2_DASHED_BLACK_MIN = 0.15;  
 var M2_DASHED_BLACK_MAX = 0.75;  
 
 
@@ -106,51 +105,119 @@ function contiguousGroups(sorted, maxGap) {
   return groups;
 }
 
-function findCandidates(bin, imgW, imgH) {
-  var rowBlack = new Int32Array(imgH);
-  var colBlack = new Int32Array(imgW);
 
-  for (var y = 0; y < imgH; y++) {
-    var base = y * imgW;
-    for (var x = 0; x < imgW; x++) {
-      if (bin[base + x] === 0) {
-        rowBlack[y]++;
-        colBlack[x]++;
+function findCandidates(bin, imgW, imgH) {
+  var candidates = [];
+  var step = 10;
+  var minInterior = 40; 
+  var minBorder = 4; 
+  
+  var hBounds = [];
+  for (var y = step; y < imgH - step; y += step) {
+    var runs = [];
+    var cColor = bin[y * imgW];
+    var cLen = 1;
+    for (var x = 1; x < imgW; x++) {
+      if (bin[y * imgW + x] === cColor) {
+        cLen++;
+      } else {
+        runs.push({ c: cColor, len: cLen, x: x - cLen });
+        cColor = bin[y * imgW + x];
+        cLen = 1;
+      }
+    }
+    runs.push({ c: cColor, len: cLen, x: imgW - cLen });
+
+    for (var i = 0; i < runs.length - 2; i++) {
+      if (runs[i].c === 0 && runs[i+1].c === 255 && runs[i+2].c === 0) {
+        var lb = runs[i], iw = runs[i+1], rb = runs[i+2];
+        if (iw.len >= minInterior && lb.len >= minBorder && rb.len >= minBorder) {
+          hBounds.push({ x: lb.x, w: rb.x + rb.len - lb.x });
+        }
       }
     }
   }
 
-  var ROW_THRESH = 0.05;
-  var denseRows = [];
-  var denseCols = [];
-  for (var y = 0; y < imgH; y++) if (rowBlack[y] / imgW >= ROW_THRESH) denseRows.push(y);
-  for (var x = 0; x < imgW; x++) if (colBlack[x] / imgH >= ROW_THRESH) denseCols.push(x);
-  if (denseRows.length === 0 || denseCols.length === 0) return [];
+  
+  var vBounds = [];
+  for (var x = step; x < imgW - step; x += step) {
+    var runs = [];
+    var cColor = bin[x];
+    var cLen = 1;
+    for (var y = 1; y < imgH; y++) {
+      if (bin[y * imgW + x] === cColor) {
+        cLen++;
+      } else {
+        runs.push({ c: cColor, len: cLen, y: y - cLen });
+        cColor = bin[y * imgW + x];
+        cLen = 1;
+      }
+    }
+    runs.push({ c: cColor, len: cLen, y: imgH - cLen });
 
-  var rowGroups = contiguousGroups(denseRows, 5);
-  var colGroups = contiguousGroups(denseCols, 5);
+    for (var i = 0; i < runs.length - 2; i++) {
+      if (runs[i].c === 0 && runs[i+1].c === 255 && runs[i+2].c === 0) {
+        var tb = runs[i], iw = runs[i+1], bb = runs[i+2];
+        if (iw.len >= minInterior && tb.len >= minBorder && bb.len >= minBorder) {
+          vBounds.push({ y: tb.y, h: bb.y + bb.len - tb.y });
+        }
+      }
+    }
+  }
 
-  var candidates = [];
+  var uniqueH = [];
+  for (var i = 0; i < hBounds.length; i++) {
+    var b = hBounds[i], found = false;
+    for (var j = 0; j < uniqueH.length; j++) {
+      if (Math.abs(b.x - uniqueH[j].x) < 20 && Math.abs(b.w - uniqueH[j].w) < 20) { found = true; break; }
+    }
+    if (!found) uniqueH.push(b);
+  }
+
+  var uniqueV = [];
+  for (var i = 0; i < vBounds.length; i++) {
+    var b = vBounds[i], found = false;
+    for (var j = 0; j < uniqueV.length; j++) {
+      if (Math.abs(b.y - uniqueV[j].y) < 20 && Math.abs(b.h - uniqueV[j].h) < 20) { found = true; break; }
+    }
+    if (!found) uniqueV.push(b);
+  }
 
   
-  candidates.push({
-    x: denseCols[0],
-    y: denseRows[0],
-    w: denseCols[denseCols.length - 1] - denseCols[0] + 1,
-    h: denseRows[denseRows.length - 1] - denseRows[0] + 1,
-  });
-
-  for (var ri = 0; ri < rowGroups.length; ri++) {
-    for (var ci = 0; ci < colGroups.length; ci++) {
-      var rg = rowGroups[ri];
-      var cg = colGroups[ci];
-      candidates.push({
-        x: cg[0],
-        y: rg[0],
-        w: cg[cg.length - 1] - cg[0] + 1,
-        h: rg[rg.length - 1] - rg[0] + 1,
-      });
+  for (var i = 0; i < uniqueH.length; i++) {
+    for (var j = 0; j < uniqueV.length; j++) {
+      var hb = uniqueH[i];
+      var vb = uniqueV[j];
+      var ar = hb.w / vb.h;
+      if (ar > 0.7 && ar < 1.3) {
+        var side = Math.round((hb.w + vb.h) / 2);
+        var cx = Math.round(hb.x + hb.w/2);
+        var cy = Math.round(vb.y + vb.h/2);
+        candidates.push({ x: Math.round(cx - side/2), y: Math.round(cy - side/2), w: side, h: side });
+      }
     }
+  }
+
+  var rowBlack = new Int32Array(imgH);
+  var colBlack = new Int32Array(imgW);
+  for (var y = 0; y < imgH; y++) {
+    for (var x = 0; x < imgW; x++) {
+      if (bin[y * imgW + x] === 0) {
+        rowBlack[y]++; colBlack[x]++;
+      }
+    }
+  }
+  var minDensity = 0.15; 
+  var denseRows = [], denseCols = [];
+  for (var y = 0; y < imgH; y++) if (rowBlack[y] / imgW >= minDensity) denseRows.push(y);
+  for (var x = 0; x < imgW; x++) if (colBlack[x] / imgH >= minDensity) denseCols.push(x);
+  if (denseRows.length > 0 && denseCols.length > 0) {
+    candidates.push({
+      x: denseCols[0],
+      y: denseRows[0],
+      w: denseCols[denseCols.length - 1] - denseCols[0] + 1,
+      h: denseRows[denseRows.length - 1] - denseRows[0] + 1,
+    });
   }
 
   return candidates;
@@ -168,9 +235,10 @@ function validateBorderSolid(bin, imgW, bx, by, bw, bh, borderPx) {
   return topOk && botOk && leftOk && rightOk;
 }
 
+
 function findAnchorWithSizeCheck(bin, imgW, bx, by, bw, bh, borderPx) {
   var side    = Math.min(bw, bh);
-  var smallSz = Math.round(side * 0.16);         
+  var smallSz = Math.round(side * 0.16);          
   var largeSz = Math.round(side * ANCHOR_LARGE_SZ_FRAC); 
   var inner   = borderPx;
 
@@ -188,7 +256,7 @@ function findAnchorWithSizeCheck(bin, imgW, bx, by, bw, bh, borderPx) {
       x          : c.x,
       y          : c.y,
       smallBlack : regionBlackFrac(bin, imgW, c.x, c.y, smallSz, smallSz),
-      largeBlack : regionBlackFrac(bin, imgW, c.x, c.y, smallSz * 2, smallSz * 2),
+      largeBlack : regionBlackFrac(bin, imgW, c.x, c.y, largeSz, largeSz),
     };
   });
 
@@ -269,7 +337,6 @@ function detectMarker1Internal(bin, imgW, imgH, imageArea) {
       continue;
     }
 
-    
     var anchorResult = findAnchorWithSizeCheck(bin, imgW, x, y, w, h, validBorderPx);
 
     console.log('[detector M1] found=true isCorrect=' + anchorResult.isCorrect + ' reason="' + anchorResult.reason + '"');
@@ -284,7 +351,6 @@ function detectMarker1Internal(bin, imgW, imgH, imageArea) {
 
   return { found: false, isCorrect: false, reason: 'No Marker 1 structure detected', bbox: null, orientation: 0 };
 }
-
 
 
 function detectMarker2Internal(bin, imgW, imgH, imageArea) {
@@ -338,7 +404,6 @@ function detectMarker2Internal(bin, imgW, imgH, imageArea) {
       continue;
     }
 
-      
     var bp2    = validBorderPx;
     var inset2 = Math.round(bp2 * 0.5);
     var topBlack   = regionBlackFrac(bin, imgW, x + inset2,    y,           w - 2 * inset2, bp2);
@@ -375,15 +440,13 @@ function detectMarker2Internal(bin, imgW, imgH, imageArea) {
 
 
 
-
 /**
- * Detect a marker in RGBA image data.
+ * 
  *
- * @param {Uint8ClampedArray|Uint8Array} rgba   Raw RGBA pixel data
+ * @param {Uint8ClampedArray|Uint8Array} rgba   
  * @param {number} width
  * @param {number} height
- * @param {1|2}   markerType                 
- *
+ * @param {1|2}   markerType                   
  * @returns {{
  *   found      : boolean,
  *   isCorrect  : boolean,

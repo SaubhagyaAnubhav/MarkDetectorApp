@@ -17,7 +17,7 @@ const FRAME_SIZE = Math.round(Math.min(SCREEN_W, SCREEN_H) * 0.72);
 
 const TARGET_COUNT      = 20;
 const CAPTURE_INTERVAL_MS = 500;
-const SCAN_TIMEOUT_MS   = 30000;
+const SCAN_TIMEOUT_MS   = 90000;
 
 const MARKER_CONFIG = {
   1: {
@@ -143,7 +143,7 @@ export default function CameraScreen({ navigation }) {
     try {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.6,
-        skipProcessing: true,
+        skipProcessing: true, 
         exif: false,
       });
 
@@ -163,6 +163,8 @@ export default function CameraScreen({ navigation }) {
           orientation: result.orientation ?? 0,
           isCorrect: result.isCorrect ?? true,
         });
+
+        console.log('[Camera] Total collected:', detectedMarkers.current.length, 'isCorrect:', result.isCorrect);
 
         const count = detectedMarkers.current.length;
         setDetectedCount(count);
@@ -299,7 +301,7 @@ export default function CameraScreen({ navigation }) {
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="back"
-        pictureSize="1280x720"
+      
         onCameraReady={onCameraReady}
       />
 

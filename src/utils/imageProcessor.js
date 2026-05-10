@@ -64,7 +64,6 @@ export async function processMarkerImage(photoUri, photoSize, markerType = 1) {
       ImageManipulator.manipulateAsync(
         photoUri,
         [
-          { crop: { originX: cropX, originY: cropY, width: cropSz, height: cropSz } },
           { resize: { width: PROCESS_WIDTH, height: PROCESS_WIDTH } },
         ],
         {
