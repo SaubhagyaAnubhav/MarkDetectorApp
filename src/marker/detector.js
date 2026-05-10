@@ -1,19 +1,19 @@
-// ✅ FIX: Loosened all thresholds for real-world camera/screen scanning
 
-const BORDER_FRAC_MIN = 0.08;
-const BORDER_FRAC_MAX = 0.22;
+
+const BORDER_FRAC_MIN = 0.04;
+const BORDER_FRAC_MAX = 0.25;
 
 const ANCHOR_FRAC_MIN = 0.08;
 const ANCHOR_FRAC_MAX = 0.24;
 const MIN_AREA_FRAC = 0.02;
 const MAX_AREA_FRAC = 0.92;
 
-const SQUARENESS_TOL = 0.25;         // ✅ FIX: was 0.20 — more tolerant of camera angle distortion
+const SQUARENESS_TOL = 0.35;         // ✅ FIX: was 0.25
 
-const MIN_INTERIOR_WHITE = 0.50;     // ✅ FIX: was 0.58 — less strict for screen glare
-const MIN_BORDER_BLACK   = 0.35;     // ✅ FIX: was 0.45 — less strict for lighting variation
-const ANCHOR_BLACK_MIN   = 0.50;     // ✅ FIX: was 0.65 — easier anchor detection
-const NON_ANCHOR_BLACK_MAX = 0.35;   // ✅ FIX: was 0.28 — more forgiving non-anchor corners
+const MIN_INTERIOR_WHITE = 0.40;     
+const MIN_BORDER_BLACK   = 0.25;     
+const ANCHOR_BLACK_MIN   = 0.35;     
+const NON_ANCHOR_BLACK_MAX = 0.45;   
 
 /**
  * @param {Uint8ClampedArray|Uint8Array} rgba
@@ -98,8 +98,9 @@ function findCandidates(bin, imgW, imgH) {
     }
   }
 
-  // ✅ FIX: Lowered from 0.30 to 0.05 so interior marker rows pass the threshold
-  const ROW_THRESH = 0.05;
+  // ✅ FIX: Increased back to 0.08. Instead of relying on interior rows to pass,
+  // we will combine pairs of row/col groups to form candidates.
+  const ROW_THRESH = 0.08;
 
   const denseRows = [];
   const denseCols = [];
@@ -108,29 +109,32 @@ function findCandidates(bin, imgW, imgH) {
 
   if (denseRows.length === 0 || denseCols.length === 0) return [];
 
-  const rowGroups = contiguousGroups(denseRows, 5);
-  const colGroups = contiguousGroups(denseCols, 5);
+  const rowGroups = contiguousGroups(denseRows, 10);
+  const colGroups = contiguousGroups(denseCols, 10);
 
   const candidates = [];
 
-  // ✅ FIX: Add FULL OUTER EXTENT as the very first candidate.
-  // This is the most likely correct bounding box for the whole marker.
-  candidates.push({
-    x: denseCols[0],
-    y: denseRows[0],
-    w: denseCols[denseCols.length - 1] - denseCols[0] + 1,
-    h: denseRows[denseRows.length - 1] - denseRows[0] + 1,
-  });
-
-  // Also add cross-product of groups as fallback candidates
-  for (const rg of rowGroups) {
-    for (const cg of colGroups) {
-      candidates.push({
-        x: cg[0],
-        y: rg[0],
-        w: cg[cg.length - 1] - cg[0] + 1,
-        h: rg[rg.length - 1] - rg[0] + 1,
-      });
+  // ✅ FIX: Generate candidates from ALL PAIRS of row groups and col groups.
+  // This guarantees that even if the top border and bottom border are split
+  // into separate groups, they will be combined to form the correct full marker box!
+  for (let ri = 0; ri < rowGroups.length; ri++) {
+    for (let rj = ri; rj < rowGroups.length; rj++) {
+      for (let ci = 0; ci < colGroups.length; ci++) {
+        for (let cj = ci; cj < colGroups.length; cj++) {
+          const r1 = rowGroups[ri][0];
+          const r2 = rowGroups[rj][rowGroups[rj].length - 1];
+          const c1 = colGroups[ci][0];
+          const c2 = colGroups[cj][colGroups[cj].length - 1];
+          
+          const w = c2 - c1 + 1;
+          const h = r2 - r1 + 1;
+          
+          // Ignore impossibly small candidates to save processing
+          if (w < 20 || h < 20) continue;
+          
+          candidates.push({ x: c1, y: r1, w, h });
+        }
+      }
     }
   }
 
@@ -203,23 +207,38 @@ function findAnchor(bin, imgW, bx, by, bw, bh, borderPx) {
   const anchorSz = Math.round(side * 0.16);
   const innerBorder = borderPx;
 
-  const corners = [
-    { name: 'TL', x: bx + innerBorder,                        y: by + innerBorder,                        orientation: 0   },
-    { name: 'TR', x: bx + bw - innerBorder - anchorSz,        y: by + innerBorder,                        orientation: 270 },
-    { name: 'BR', x: bx + bw - innerBorder - anchorSz,        y: by + bh - innerBorder - anchorSz,        orientation: 180 },
-    { name: 'BL', x: bx + innerBorder,                        y: by + bh - innerBorder - anchorSz,        orientation: 90  },
+  // ✅ FIX: Check multiple offsets to handle markers with a gap between border and anchor
+  const offsets = [
+    innerBorder,
+    innerBorder + Math.round(side * 0.04),
+    innerBorder + Math.round(side * 0.08),
+    innerBorder + Math.round(side * 0.12),
+    innerBorder + Math.round(side * 0.16)
   ];
 
-  const results = corners.map(c => ({
-    ...c,
-    blackFrac: regionBlackFrac(bin, imgW, c.x, c.y, anchorSz, anchorSz),
-  }));
+  function getCornerMaxBlack(isLeft, isTop) {
+    let maxF = 0;
+    for (const off of offsets) {
+      const x = isLeft ? bx + off : bx + bw - off - anchorSz;
+      const y = isTop  ? by + off : by + bh - off - anchorSz;
+      const f = regionBlackFrac(bin, imgW, x, y, anchorSz, anchorSz);
+      if (f > maxF) maxF = f;
+    }
+    return maxF;
+  }
+
+  const corners = [
+    { name: 'TL', orientation: 0,   blackFrac: getCornerMaxBlack(true, true) },
+    { name: 'TR', orientation: 270, blackFrac: getCornerMaxBlack(false, true) },
+    { name: 'BR', orientation: 180, blackFrac: getCornerMaxBlack(false, false) },
+    { name: 'BL', orientation: 90,  blackFrac: getCornerMaxBlack(true, false) },
+  ];
 
   // ✅ DEBUG: Log anchor black fractions to help diagnose detection failures
-  console.log('[detector] Anchor fracs:', results.map(r => `${r.name}=${r.blackFrac.toFixed(2)}`).join(' '));
+  console.log('[detector] Anchor fracs:', corners.map(r => `${r.name}=${r.blackFrac.toFixed(2)}`).join(' '));
 
-  const anchors    = results.filter(r => r.blackFrac >= ANCHOR_BLACK_MIN);
-  const nonAnchors = results.filter(r => r.blackFrac < ANCHOR_BLACK_MIN);
+  const anchors    = corners.filter(r => r.blackFrac >= ANCHOR_BLACK_MIN);
+  const nonAnchors = corners.filter(r => r.blackFrac < ANCHOR_BLACK_MIN);
 
   if (anchors.length !== 1) {
     console.log(`[detector] Expected 1 anchor, found ${anchors.length}`);
